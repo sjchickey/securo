@@ -15,6 +15,7 @@ export type ColumnId =
   | 'attachments'
   | 'type'
   | 'status'
+  | 'paid'
 
 export type SortDir = 'asc' | 'desc'
 
@@ -25,7 +26,7 @@ export interface ColumnDef {
   defaultVisible: boolean
   sortable: boolean
   defaultWidth: number
-  align: 'left' | 'right'
+  align: 'left' | 'right' | 'center'
 }
 
 // Source of truth for the available columns. The picker iterates over this
@@ -42,6 +43,7 @@ export const COLUMN_REGISTRY: ColumnDef[] = [
   { id: 'attachments', labelKey: 'transactions.colAttachments', defaultVisible: false, sortable: false, defaultWidth: 70,  align: 'right' },
   { id: 'type',        labelKey: 'transactions.colType',        defaultVisible: false, sortable: true,  defaultWidth: 100, align: 'left' },
   { id: 'status',      labelKey: 'transactions.colStatus',      defaultVisible: false, sortable: true,  defaultWidth: 100, align: 'left' },
+  { id: 'paid',        labelKey: 'transactions.colPaid',        defaultVisible: false, sortable: true,  defaultWidth: 80,  align: 'center' },
   { id: 'amount',      labelKey: 'transactions.colAmount',      alwaysOn: true, defaultVisible: true, sortable: true, defaultWidth: 160, align: 'right' },
 ]
 

@@ -217,3 +217,17 @@
     animation: none;
   }
 }
+
+/* Settled credit-card charges. A left rail plus a faint tint rather than
+   `opacity`: the class lands last on the row, so dimming the whole thing
+   would swallow the selection highlight and make the text hard to read. */
+.transaction-row-paid {
+  background-color: color-mix(in srgb, var(--muted) 45%, transparent);
+  box-shadow: inset 3px 0 0 var(--chart-3);
+}
+
+.transaction-row-paid .transaction-amount {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  color: var(--muted-foreground);
+}

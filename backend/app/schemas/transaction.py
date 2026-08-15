@@ -1,5 +1,5 @@
 import uuid
-from datetime import date as _Date
+from datetime import date as _Date, datetime
 from decimal import Decimal
 from typing import Literal, Optional
 
@@ -108,6 +108,12 @@ class TransactionUpdate(BaseModel):
     # CC bucketing override (issue #92). Empty string / explicit null clears
     # it back to auto. Only meaningful for credit-card accounts.
     effective_bill_date: Optional[_Date] = None
+    # Payment tracking is deliberately absent here: it writes an FK
+    # (covered_by_payment_id) that needs workspace + same-account validation,
+    # and the generic patch path applies fields with a bare setattr. Use the
+    # bulk-mark-paid / bulk-mark-unpaid endpoints instead — they validate, and
+    # they accept a single-element list.
+    #
     # When provided, replaces the transaction's splits wholesale. Pass
     # an object with an empty `splits` list to clear them.
     splits: Optional[TransactionSplitsInput] = None
@@ -164,6 +170,10 @@ class TransactionRead(TransactionBase):
     bill_id: Optional[uuid.UUID] = None
     effective_bill_date: Optional[_Date] = None
     recurring_transaction_id: Optional[uuid.UUID] = None
+    # Payment tracking fields
+    is_paid: bool = False
+    paid_date: Optional[datetime] = None
+    covered_by_payment_id: Optional[uuid.UUID] = None
     splits: list[TransactionSplitRead] = []
     # Shared-transaction view fields. Set per-request when the viewer
     # is a linked member of one of this transaction's splits but not
@@ -241,6 +251,34 @@ class CreateCounterpartRequest(BaseModel):
 class BulkTagsRequest(BaseModel):
     transaction_ids: list[uuid.UUID]
     tags: list[str]
+
+
+class BulkMarkPaidRequest(BaseModel):
+    transaction_ids: list[uuid.UUID]
+    paid_date: Optional[datetime] = None
+    # The card payment that settled these charges. Optional — marking paid
+    # without recording which payment covered it is a valid workflow.
+    covered_by_payment_id: Optional[uuid.UUID] = None
+
+
+class BulkMarkUnpaidRequest(BaseModel):
+    transaction_ids: list[uuid.UUID]
+
+
+class PaymentCoverageRead(BaseModel):
+    """Both directions of the covering-payment link for one transaction."""
+
+    # The card payment that settled this charge, if any.
+    covered_by: Optional["TransactionRead"] = None
+    # Charges this transaction settled — populated when it *is* the payment.
+    covers: list["TransactionRead"] = []
+
+
+class BulkPaidResponse(BaseModel):
+    """`skipped` counts ids that weren't credit-card rows in this workspace."""
+
+    updated: int
+    skipped: int
 
 
 class TransferRead(BaseModel):

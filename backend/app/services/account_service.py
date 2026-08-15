@@ -181,6 +181,79 @@ def serialize_account(
     return payload
 
 
+async def get_unpaid_by_category(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> Optional[list[dict]]:
+    """Outstanding charges on a card, grouped by category, biggest first.
+
+    Deliberately *not* windowed to a statement: the question this answers is
+    "what do I still owe and out of which budget", so a charge left unpaid
+    three cycles ago has to keep showing up. That means this total will
+    normally exceed the statement view's `unpaid_total`, which is scoped to
+    the cycle on screen.
+
+    Returns None when the account doesn't exist in the workspace, and [] for
+    non-credit-card accounts, mirroring `get_credit_card_bills`.
+    """
+    account = await get_account(session, account_id, workspace_id)
+    if account is None:
+        return None
+    if account.type != "credit_card":
+        return []
+
+    # Refunds net against charges within a category, same as the bill total.
+    signed = case(
+        (Transaction.type == "credit", -func.abs(_effective_amount(account.currency))),
+        else_=func.abs(_effective_amount(account.currency)),
+    )
+
+    result = await session.execute(
+        select(
+            Transaction.category_id,
+            Category.name,
+            Category.color,
+            Category.icon,
+            func.coalesce(func.sum(signed), 0).label("total"),
+            func.count(Transaction.id).label("count"),
+        )
+        .outerjoin(Category, Category.id == Transaction.category_id)
+        .where(
+            Transaction.account_id == account_id,
+            Transaction.workspace_id == workspace_id,
+            Transaction.is_paid.is_(False),
+            Transaction.source != "opening_balance",
+            counts_as_pnl(),
+        )
+        .group_by(Transaction.category_id, Category.name, Category.color, Category.icon)
+    )
+
+    rows = [
+        {
+            "category_id": row.category_id,
+            "name": row.name,
+            "color": row.color,
+            "icon": row.icon,
+            "total": float(row.total),
+            "count": row.count,
+        }
+        for row in result.all()
+    ]
+    # Zero-sum groups (a charge fully refunded) carry no signal here.
+    rows = [r for r in rows if r["total"] != 0]
+    rows.sort(key=lambda r: r["total"], reverse=True)
+    return rows
+
+
+def _effective_amount(account_currency: str):
+    """Native amount when the tx matches the account currency, else converted."""
+    return case(
+        (Transaction.currency == account_currency, Transaction.amount),
+        else_=func.coalesce(Transaction.amount_primary, Transaction.amount),
+    )
+
+
 async def get_credit_card_bills(
     session: AsyncSession,
     account_id: uuid.UUID,
@@ -781,11 +854,33 @@ async def get_account_summary(
         )
     monthly_expenses = float(expenses_result.scalar())
 
+    # Paid/unpaid split of the statement (cards only). Reuses `_scope` and the
+    # same signed expression as monthly_expenses on purpose, so the two halves
+    # add back up to the bill total the user sees rather than drifting from it.
+    paid_total: Optional[float] = None
+    unpaid_total: Optional[float] = None
+    if account.type == "credit_card":
+        async def _bill_total_where_paid(is_paid: bool) -> float:
+            result = await session.execute(
+                _scope(select(func.coalesce(func.sum(signed_for_bill), 0)).where(
+                    Transaction.account_id == account_id,
+                    Transaction.source != "opening_balance",
+                    Transaction.is_paid == is_paid,
+                    counts_as_pnl(),
+                ))
+            )
+            return float(result.scalar())
+
+        paid_total = await _bill_total_where_paid(True)
+        unpaid_total = await _bill_total_where_paid(False)
+
     return {
         "account_id": account_id,
         "current_balance": current_balance,
         "monthly_income": monthly_income,
         "monthly_expenses": monthly_expenses,
+        "paid_total": paid_total,
+        "unpaid_total": unpaid_total,
     }
 
 

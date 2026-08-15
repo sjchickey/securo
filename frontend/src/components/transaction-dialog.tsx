@@ -109,6 +109,7 @@ export function TransactionDialog({
   onDelete,
   onUnlinkTransfer,
   onIgnoreChanged,
+  onPaymentChanged,
   onCreateRule,
   loading,
   error,
@@ -127,6 +128,8 @@ export function TransactionDialog({
   onDelete?: () => void
   onUnlinkTransfer?: (pairId: string) => void
   onIgnoreChanged?: () => void
+  /** Payment status changed — parent should refetch. */
+  onPaymentChanged?: () => void
   onCreateRule?: (tx: Transaction) => void
   loading: boolean
   error: string | null
@@ -239,6 +242,7 @@ export function TransactionDialog({
               onDelete={onDelete}
               onUnlinkTransfer={onUnlinkTransfer}
               onIgnoreChanged={onIgnoreChanged}
+              onPaymentChanged={onPaymentChanged}
               onCreateRule={onCreateRule}
               onCancel={handleClose}
               loading={loading}
@@ -400,6 +404,7 @@ function TransactionForm({
   onDelete,
   onUnlinkTransfer,
   onIgnoreChanged,
+  onPaymentChanged,
   onCreateRule,
   onCancel,
   loading,
@@ -419,6 +424,8 @@ function TransactionForm({
   onDelete?: () => void
   onUnlinkTransfer?: (pairId: string) => void
   onIgnoreChanged?: () => void
+  /** Payment status changed — parent should refetch. */
+  onPaymentChanged?: () => void
   onCreateRule?: (tx: Transaction) => void
   onCancel: () => void
   loading: boolean
@@ -531,6 +538,10 @@ function TransactionForm({
   const [togglingIgnore, setTogglingIgnore] = useState(false)
   const [recurringLinked, setRecurringLinked] = useState(seed?.recurring_transaction_id != null)
   const [unlinkingRecurring, setUnlinkingRecurring] = useState(false)
+  const [isPaid, setIsPaid] = useState(seed?.is_paid ?? false)
+  const [paidDate, setPaidDate] = useState<string | null>(seed?.paid_date ?? null)
+  const [coveringPaymentId, setCoveringPaymentId] = useState(seed?.covered_by_payment_id ?? '')
+  const [togglingPaid, setTogglingPaid] = useState(false)
   const [addToRuleOpen, setAddToRuleOpen] = useState(false)
 
   const { data: rulesList, isLoading: rulesLoading } = useQuery({
@@ -546,6 +557,41 @@ function TransactionForm({
     queryFn: () => transactionsApi.transferPair(transaction!.id),
     enabled: !!transaction?.id && !!transaction?.transfer_pair_id,
   })
+  // Payment tracking only applies to credit cards; everything below is gated
+  // on this so a checking-account row shows no payment UI at all.
+  const txAccount = accounts.find(a => a.id === (seed?.account_id ?? ''))
+  const isCardTransaction = txAccount?.type === 'credit_card'
+
+  // Both directions of the covering-payment link: the payment that settled
+  // this charge, and — when this row *is* the payment — what it settled.
+  const { data: coverage } = useQuery({
+    queryKey: ['transactions', transaction?.id, 'payment-coverage'],
+    queryFn: () => transactionsApi.paymentCoverage(transaction!.id),
+    enabled: !!transaction?.id && isCardTransaction,
+  })
+
+  // Candidate payments for the inline picker: credits on the same card.
+  const { data: cardPayments } = useQuery({
+    queryKey: ['card-payments', seed?.account_id],
+    queryFn: () => transactionsApi.list({
+      account_id: seed!.account_id!,
+      type: 'credit',
+      limit: 25,
+      sort_by: 'date',
+      sort_dir: 'desc',
+    }),
+    enabled: !!transaction?.id && isCardTransaction,
+  })
+
+  // Merge the linked payment into the options: it may predate the 25 most
+  // recent credits we fetch, and a missing option renders as "not linked".
+  const paymentOptions = useMemo(() => {
+    const items = cardPayments?.items ?? []
+    const linked = coverage?.covered_by
+    if (linked && !items.some(p => p.id === linked.id)) return [linked, ...items]
+    return items
+  }, [cardPayments?.items, coverage?.covered_by])
+
   const extendableRules = useMemo(
     () => (rulesList ?? []).filter(canExtendRuleFromTransaction),
     [rulesList],
@@ -611,6 +657,36 @@ function TransactionForm({
       toast.error(t('common.error'))
     } finally {
       setTogglingIgnore(false)
+    }
+  }
+
+  // `paymentId`: an id links it, '' unlinks (sent as explicit null), and
+  // undefined leaves the existing link alone.
+  const applyPaidChange = async (next: boolean, paymentId?: string) => {
+    if (!seed?.id || togglingPaid) return
+    setTogglingPaid(true)
+    try {
+      const result = next
+        ? await transactionsApi.bulkMarkPaid(
+            [seed.id], undefined, paymentId === undefined ? undefined : (paymentId || null),
+          )
+        : await transactionsApi.bulkMarkUnpaid([seed.id])
+      if (result.updated === 0) {
+        toast.error(t('transactions.markPaidCardsOnly'))
+        return
+      }
+      setIsPaid(next)
+      setPaidDate(next ? new Date().toISOString() : null)
+      setCoveringPaymentId(next ? (paymentId ?? '') : '')
+      toast.success(next
+        ? t('transactions.bulkMarkPaidSuccess', { count: result.updated })
+        : t('transactions.bulkMarkUnpaidSuccess', { count: result.updated }))
+      queryClient.invalidateQueries({ queryKey: ['transactions', seed.id, 'payment-coverage'] })
+      onPaymentChanged?.()
+    } catch (err) {
+      toast.error(extractApiError(err))
+    } finally {
+      setTogglingPaid(false)
     }
   }
 
@@ -861,6 +937,97 @@ function TransactionForm({
               </button>
             )}
           </div>
+        </div>
+      )}
+      {isCardTransaction && !isCreating && (
+        <div className="p-3 text-sm bg-muted/40 border border-border rounded-md space-y-2.5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 space-y-0.5">
+              <p className="font-medium text-foreground">
+                {isPaid ? t('transactions.paidYes') : t('transactions.paidNo')}
+              </p>
+              {isPaid && paidDate && (
+                <p className="text-xs text-muted-foreground">
+                  {t('transactions.paidOn', {
+                    date: new Date(paidDate).toLocaleDateString(dateLocale),
+                  })}
+                </p>
+              )}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={togglingPaid || loading}
+              onClick={() => applyPaidChange(!isPaid, coveringPaymentId)}
+              className="shrink-0"
+            >
+              {isPaid ? t('transactions.markUnpaid') : t('transactions.markPaid')}
+            </Button>
+          </div>
+
+          {/* Inline payment picker. Changing it re-marks the row as paid with
+              the new link, so one control covers both linking and relinking. */}
+          {isPaid && (
+            <div>
+              <label
+                htmlFor="covering-payment"
+                className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                {t('transactions.markPaidPaymentLabel')}
+              </label>
+              <select
+                id="covering-payment"
+                value={coveringPaymentId}
+                disabled={togglingPaid || loading}
+                onChange={(e) => applyPaidChange(true, e.target.value)}
+                className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus-visible:ring-[2px] focus-visible:ring-ring/30 disabled:opacity-50"
+              >
+                <option value="">{t('transactions.markPaidNoPayment')}</option>
+                {paymentOptions
+                  .filter(p => p.id !== seed?.id)
+                  .map(p => (
+                    <option key={p.id} value={p.id}>
+                      {new Date(p.date + 'T00:00:00').toLocaleDateString(dateLocale)}
+                      {' · '}
+                      {p.description}
+                      {' · '}
+                      {formatCurrency(Math.abs(Number(p.amount)), p.currency ?? undefined, displayLocale)}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
+
+          {/* Read-only: the charges this row settled, when it is the payment. */}
+          {!!coverage?.covers.length && (
+            <div className="border-t border-border pt-2">
+              <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {t('transactions.coversCharges', { count: coverage.covers.length })}
+              </p>
+              <ul className="max-h-40 space-y-1 overflow-y-auto">
+                {coverage.covers.map(c => (
+                  <li key={c.id} className="flex items-center justify-between gap-2 text-xs">
+                    <span className="min-w-0 truncate text-foreground">{c.description}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                      {new Date(c.date + 'T00:00:00').toLocaleDateString(dateLocale)}
+                      {' · '}
+                      {formatCurrency(Math.abs(Number(c.amount)), c.currency ?? undefined, displayLocale)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-xs font-medium tabular-nums text-foreground">
+                {t('transactions.coversTotal', {
+                  total: formatCurrency(
+                    coverage.covers.reduce((sum, c) => sum + Math.abs(Number(c.amount)), 0),
+                    coverage.covers[0]?.currency ?? undefined,
+                    displayLocale,
+                  ),
+                })}
+              </p>
+            </div>
+          )}
         </div>
       )}
       {recurringMatch && (

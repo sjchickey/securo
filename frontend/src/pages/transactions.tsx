@@ -35,7 +35,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Skeleton } from '@/components/ui/skeleton'
-import { AlertTriangle, ArrowLeftRight, ArrowUp, ArrowDown, Check, Clock, HelpCircle, Info, Paperclip, Trash2, Users, X, EyeClosed, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, ArrowUp, ArrowDown, Banknote, Check, Clock, HelpCircle, Info, Paperclip, Trash2, Users, X, EyeClosed, SlidersHorizontal } from 'lucide-react'
 import type { Transaction, Rule, InstallmentSeriesInput, TransactionApplyScope, TransactionEditPayload } from '@/types'
 import { RuleDialog, type RuleDialogInitialData } from '@/components/rule-dialog'
 import { PageHeader } from '@/components/page-header'
@@ -50,6 +50,7 @@ import { MobileBulkSelectionActions } from '@/components/mobile-bulk-selection-a
 import { type ColumnDef, type ColumnId, useTransactionsGridState } from '@/components/transactions-grid-columns'
 import { TransferDialog } from '@/components/transfer-dialog'
 import { LinkTransferDialog } from '@/components/link-transfer-dialog'
+import { MarkPaidDialog } from '@/components/mark-paid-dialog'
 import { BulkAddToGroupDialog, type BulkAddToGroupSubmission } from '@/components/bulk-add-to-group-dialog'
 import { TransactionsFilterBar } from '@/components/transactions-filter-bar'
 import { TransactionCalendarView } from '@/components/transaction-calendar-view'
@@ -60,7 +61,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { formatCurrency } from '@/lib/format'
-import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
 
 type TransactionUpdatePayload = TransactionEditPayload & {
   apply_to_transfer_pair?: boolean
@@ -150,6 +151,9 @@ export default function TransactionsPage() {
   const [filterGroupId, setFilterGroupId] = useState<string>(searchParams.get('group_id') ?? '')
   const [filterType, setFilterType] = useState<string>(searchParams.get('type') ?? '')
   const [filterStatus, setFilterStatus] = useState<string>(searchParams.get('status') ?? '')
+  // '' = any, 'true' = paid, 'false' = unpaid.
+  const [filterIsPaid, setFilterIsPaid] = useState<string>(searchParams.get('is_paid') ?? '')
+  const [markPaidOpen, setMarkPaidOpen] = useState(false)
   const [filterMinAmount, setFilterMinAmount] = useState<string>(searchParams.get('min_amount') ?? '')
   const [filterMaxAmount, setFilterMaxAmount] = useState<string>(searchParams.get('max_amount') ?? '')
   const [tagFilters, setTagFilters] = useState<string[]>([])
@@ -228,6 +232,7 @@ export default function TransactionsPage() {
     setFilterGroupId(searchParams.get('group_id') ?? '')
     setFilterType(searchParams.get('type') ?? '')
     setFilterStatus(searchParams.get('status') ?? '')
+    setFilterIsPaid(searchParams.get('is_paid') ?? '')
     const categories = searchParams.get('category_id');
     setFilterCategoryIds(categories ? categories.split(',') : []);
     setFilterUncategorized(searchParams.get('uncategorized') === '1');
@@ -263,6 +268,7 @@ export default function TransactionsPage() {
         ['group_id', filterGroupId],
         ['type', filterType],
         ['status', filterStatus],
+        ['is_paid', filterIsPaid],
         ['category_id', filterCategoryIds.join(',')],
         ['uncategorized', filterUncategorized ? '1' : ''],
         ['account_id', filterAccountIds.join(',')],
@@ -287,6 +293,7 @@ export default function TransactionsPage() {
     filterGroupId,
     filterType,
     filterStatus,
+    filterIsPaid,
     filterCategoryIds,
     filterUncategorized,
     filterAccountIds,
@@ -310,7 +317,7 @@ export default function TransactionsPage() {
     setSelectedIds(new Set())
     setLastSelectedId(null)
     setBulkCategory('')
-  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery])
+  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterIsPaid, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery])
 
   useEffect(() => {
     if (viewMode === 'calendar') {
@@ -350,9 +357,11 @@ export default function TransactionsPage() {
   // Merge the global active-collection filter with the page's own account
   // filter (issue #105): an explicit on-page account selection wins; otherwise
   // scope to the active collection's accounts. null collection = all accounts.
-  const effectiveAccountIds = filterAccountIds.length > 0
-    ? filterAccountIds
-    : (activeAccountIds ?? [])
+  // Memoized so downstream hooks that depend on it don't rerun every render.
+  const effectiveAccountIds = useMemo(
+    () => (filterAccountIds.length > 0 ? filterAccountIds : (activeAccountIds ?? [])),
+    [filterAccountIds, activeAccountIds],
+  )
   // Wallet-only collection active (zero accounts) and no explicit on-page
   // account filter → there are no matching transactions; show empty rather
   // than falling back to all accounts.
@@ -360,7 +369,7 @@ export default function TransactionsPage() {
     && activeAccountIds !== null && activeAccountIds.length === 0
 
   const { data, isLoading } = useQuery({
-    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery, tagFilters, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
+    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterIsPaid, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery, tagFilters, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
     enabled: !noAccounts,
     queryFn: () =>
       transactions.list({
@@ -372,6 +381,7 @@ export default function TransactionsPage() {
         group_id: filterGroupId || undefined,
         type: filterType || undefined,
         status: filterStatus || undefined,
+        is_paid: filterIsPaid === 'true' ? true : filterIsPaid === 'false' ? false : undefined,
         uncategorized: filterUncategorized ? true : undefined,
         from: filterFrom || undefined,
         to: filterTo || undefined,
@@ -640,6 +650,45 @@ export default function TransactionsPage() {
     },
   })
 
+  const bulkMarkPaidMutation = useMutation({
+    mutationFn: ({ paidDate, paymentId }: { paidDate: string; paymentId?: string }) =>
+      transactions.bulkMarkPaid(
+        Array.from(selectedIds),
+        // The API takes a datetime; the picker is date-only.
+        `${paidDate}T00:00:00Z`,
+        paymentId,
+      ),
+    onSuccess: (result) => {
+      invalidateAfterTxMutation()
+      setSelectedIds(new Set())
+      setMarkPaidOpen(false)
+      toast.success(
+        result.skipped
+          ? t('transactions.bulkMarkPaidPartial', { updated: result.updated, skipped: result.skipped })
+          : t('transactions.bulkMarkPaidSuccess', { count: result.updated }),
+      )
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
+    },
+  })
+
+  const bulkMarkUnpaidMutation = useMutation({
+    mutationFn: () => transactions.bulkMarkUnpaid(Array.from(selectedIds)),
+    onSuccess: (result) => {
+      invalidateAfterTxMutation()
+      setSelectedIds(new Set())
+      toast.success(
+        result.skipped
+          ? t('transactions.bulkMarkUnpaidPartial', { updated: result.updated, skipped: result.skipped })
+          : t('transactions.bulkMarkUnpaidSuccess', { count: result.updated }),
+      )
+    },
+    onError: (error) => {
+      toast.error(extractApiError(error))
+    },
+  })
+
   const createCounterpartMutation = useMutation({
     mutationFn: ({ anchorId, toAccountId }: { anchorId: string; toAccountId: string }) =>
       transactions.createTransferCounterpart(anchorId, toAccountId),
@@ -785,6 +834,39 @@ export default function TransactionsPage() {
 
   const allSelected = selectableItems.length > 0 && selectableItems.every(tx => selectedIds.has(tx.id))
   const someSelected = selectableItems.some(tx => selectedIds.has(tx.id)) && !allSelected
+
+  // Payment tracking only applies to credit cards, so the paid column, the
+  // paid filter and the bulk actions all hide unless a card is in scope.
+  const creditCardAccountIds = useMemo(
+    () => new Set((accountsList ?? []).filter(a => a.type === 'credit_card').map(a => a.id)),
+    [accountsList],
+  )
+  const scopeHasCreditCard = useMemo(() => {
+    // No explicit account filter means "everything", which may include a card.
+    if (!effectiveAccountIds || effectiveAccountIds.length === 0) return creditCardAccountIds.size > 0
+    return effectiveAccountIds.some(id => creditCardAccountIds.has(id))
+  }, [effectiveAccountIds, creditCardAccountIds])
+
+  // Mark-paid is offered only when every selected row sits on one card: the
+  // backend refuses a payment link that spans accounts, and a mixed selection
+  // would silently drop its non-card rows.
+  // The paid column is meaningless outside a card scope, so drop it from the
+  // rendered set rather than showing a column of em-dashes. The registry entry
+  // stays put, so the user's column choice survives changing the filter.
+  const visibleColumns = useMemo(
+    () => grid.visibleColumns.filter(col => col.id !== 'paid' || scopeHasCreditCard),
+    [grid.visibleColumns, scopeHasCreditCard],
+  )
+
+  const paidSelection = useMemo(() => {
+    const selected = (data?.items ?? []).filter(tx => selectedIds.has(tx.id))
+    if (!selected.length) return null
+    const accountIds = new Set(selected.map(tx => tx.account_id))
+    if (accountIds.size !== 1) return null
+    const accountId = [...accountIds][0]
+    if (!accountId || !creditCardAccountIds.has(accountId)) return null
+    return { accountId, ids: selected.map(tx => tx.id) }
+  }, [data?.items, selectedIds, creditCardAccountIds])
 
   // Net total of the currently-selected rows (issue #185). Selection is
   // always page-scoped (cleared on page/filter change), so summing the
@@ -967,8 +1049,8 @@ export default function TransactionsPage() {
   const renderHeaderCell = (col: ColumnDef) => {
     const isSorted = grid.sortBy === col.id
     const sortIndicator = isSorted ? (grid.sortDir === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />) : null
-    const alignClass = col.align === 'right' ? 'text-right' : 'text-left'
-    const justify = col.align === 'right' ? 'justify-end' : 'justify-start'
+    const alignClass = col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
+    const justify = col.align === 'right' ? 'justify-end' : col.align === 'center' ? 'justify-center' : 'justify-start'
     const cursorClass = col.sortable ? 'cursor-pointer select-none hover:text-foreground' : ''
     // Match the amount/attachments body cells' pr-5 so right-aligned
     // headers line up with their values (issue #161 polish).
@@ -1003,7 +1085,7 @@ export default function TransactionsPage() {
     return (
       <>
         <span
-          className={`text-xs md:text-sm font-bold tabular-nums ${
+          className={`transaction-amount text-xs md:text-sm font-bold tabular-nums ${
             tx.is_ignored ? 'text-gray-500': tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'
           }`}
         >
@@ -1113,6 +1195,19 @@ export default function TransactionsPage() {
                 <Clock size={12} className="text-amber-500" role="img" aria-label={t('transactions.pending')} />
               </span>
             )}
+            {tx.covered_by_payment_id && (
+              <button
+                type="button"
+                title={t('transactions.coveredByPayment')}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  navigate(`/transactions?highlight=${tx.covered_by_payment_id}`)
+                }}
+                className="shrink-0 inline-flex items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 p-0.5 dark:border-emerald-500/30 dark:bg-emerald-500/10"
+              >
+                <Banknote size={12} className="text-emerald-600" role="img" aria-label={t('transactions.coveredByPayment')} />
+              </button>
+            )}
             {(tx.attachment_count ?? 0) > 0 && (
               <Paperclip size={12} className="text-muted-foreground shrink-0" />
             )}
@@ -1147,7 +1242,7 @@ export default function TransactionsPage() {
 
   const renderBodyCell = (col: ColumnDef, tx: Transaction) => {
     const widthStyle = { width: grid.widthOf(col.id), minWidth: grid.widthOf(col.id) }
-    const alignClass = col.align === 'right' ? 'text-right' : ''
+    const alignClass = col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''
     const baseClass = `py-2.5 ${alignClass}`
     switch (col.id) {
       case 'date':
@@ -1255,6 +1350,23 @@ export default function TransactionsPage() {
               : t('transactions.statusPosted')}
           </TableCell>
         )
+      case 'paid':
+        return (
+          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm text-muted-foreground`}>
+            {tx.is_paid ? (
+              <span
+                className="inline-flex items-center justify-center"
+                title={tx.paid_date
+                  ? t('transactions.paidOn', { date: new Date(tx.paid_date).toLocaleDateString(dateLocale) })
+                  : t('transactions.paidYes')}
+              >
+                <Check size={16} className="text-emerald-600" />
+              </span>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+          </TableCell>
+        )
     }
   }
 
@@ -1339,6 +1451,9 @@ export default function TransactionsPage() {
         onTypeChange={(v) => { setFilterType(v); setPage(1) }}
         filterStatus={filterStatus}
         onStatusChange={(v) => { setFilterStatus(v); setPage(1) }}
+        filterIsPaid={filterIsPaid}
+        onIsPaidChange={(v) => { setFilterIsPaid(v); setPage(1) }}
+        showPaidFilter={scopeHasCreditCard}
         filterFrom={filterFrom}
         filterTo={filterTo}
         onDateRangeChange={(from, to) => { setFilterFrom(from); setFilterTo(to); setPage(1) }}
@@ -1355,6 +1470,7 @@ export default function TransactionsPage() {
           setFilterGroupId('')
           setFilterType('')
           setFilterStatus('')
+          setFilterIsPaid('')
           setFilterMinAmount('')
           setFilterMaxAmount('')
           setSearchInput('')
@@ -1491,7 +1607,7 @@ export default function TransactionsPage() {
                     />
                   )}
                 </TableHead>
-                {grid.visibleColumns.map(renderHeaderCell)}
+                {visibleColumns.map(renderHeaderCell)}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1501,7 +1617,7 @@ export default function TransactionsPage() {
                   ref={tx.id === highlightId ? highlightedRowRef : undefined}
                   className={`hover:bg-muted border-b border-border last:border-0 ${
                     selectedIds.has(tx.id) ? 'bg-primary/5' : ''
-                  } ${tx.is_shared || !canWrite ? 'cursor-default' : 'cursor-pointer'}`}
+                  } ${tx.is_shared || !canWrite ? 'cursor-default' : 'cursor-pointer'} ${getPaidRowClassName(tx)}`}
                   onClick={() => {
                     if (tx.is_shared) {
                       // Owned by another user — view in the group context instead.
@@ -1530,12 +1646,12 @@ export default function TransactionsPage() {
                       />
                     )}
                   </TableCell>
-                  {grid.visibleColumns.map(col => renderBodyCell(col, tx))}
+                  {visibleColumns.map(col => renderBodyCell(col, tx))}
                 </TableRow>
               ))}
               {filteredItems.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={grid.visibleColumns.length + 1} className="text-center py-16 text-muted-foreground">
+                  <TableCell colSpan={visibleColumns.length + 1} className="text-center py-16 text-muted-foreground">
                     {t('transactions.noResults')}
                   </TableCell>
                 </TableRow>
@@ -1714,6 +1830,9 @@ export default function TransactionsPage() {
               onCreateRule={selectedSingleTx && !selectedSingleTx.is_shared
                 ? () => handleCreateRuleFromTransaction(selectedSingleTx)
                 : undefined}
+              onMarkPaid={paidSelection ? () => setMarkPaidOpen(true) : undefined}
+              onMarkUnpaid={paidSelection ? () => bulkMarkUnpaidMutation.mutate() : undefined}
+              markPaidPending={bulkMarkPaidMutation.isPending || bulkMarkUnpaidMutation.isPending}
               onTagInputChange={setBulkTagInput}
               onAddTags={(tags) => bulkAddTagsMutation.mutate({ ids: Array.from(selectedIds), tags })}
               onRemoveTags={(tags) => bulkRemoveTagsMutation.mutate({ ids: Array.from(selectedIds), tags })}
@@ -1881,6 +2000,38 @@ export default function TransactionsPage() {
               <span className="hidden lg:inline">{t('common.delete')}</span>
             </Button>
 
+            {/* Mark paid / unpaid — cards only, and only when the whole
+                selection sits on a single card (see `paidSelection`). */}
+            {paidSelection && (
+              <>
+                <div className="w-px bg-border/60 self-stretch" />
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setMarkPaidOpen(true)}
+                  disabled={bulkMarkPaidMutation.isPending}
+                  className="h-8 px-3 shrink-0 text-sm"
+                  title={t('transactions.markPaid')}
+                >
+                  <Check size={15} className="lg:mr-1.5 text-emerald-600" />
+                  <span className="hidden lg:inline text-emerald-600">{t('transactions.markPaid')}</span>
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => bulkMarkUnpaidMutation.mutate()}
+                  disabled={bulkMarkUnpaidMutation.isPending}
+                  className="h-8 px-3 shrink-0 text-sm"
+                  title={t('transactions.markUnpaid')}
+                >
+                  <X size={15} className="lg:mr-1.5 text-muted-foreground" />
+                  <span className="hidden lg:inline">{t('transactions.markUnpaid')}</span>
+                </Button>
+              </>
+            )}
+
             <div className="ml-auto" />
 
             {/* Close */}
@@ -1906,6 +2057,18 @@ export default function TransactionsPage() {
           bulkAddToGroupMutation.mutate({ ids: Array.from(selectedIds), payload })
         }
         isPending={bulkAddToGroupMutation.isPending}
+      />
+
+      {/* Mark as paid */}
+      <MarkPaidDialog
+        // Guard on paidSelection too: clearing the selection while the dialog
+        // is open would otherwise leave it up with nothing to act on.
+        open={markPaidOpen && !!paidSelection}
+        onClose={() => setMarkPaidOpen(false)}
+        transactionIds={paidSelection?.ids ?? []}
+        accountId={paidSelection?.accountId ?? null}
+        onConfirm={(paidDate, paymentId) => bulkMarkPaidMutation.mutate({ paidDate, paymentId })}
+        loading={bulkMarkPaidMutation.isPending}
       />
 
       {/* Link Transfer Dialog */}
@@ -1970,6 +2133,7 @@ export default function TransactionsPage() {
         } : undefined}
         onUnlinkTransfer={(pairId) => unlinkTransferMutation.mutate(pairId)}
         onIgnoreChanged={invalidateAfterTxMutation}
+        onPaymentChanged={invalidateAfterTxMutation}
         onCreateRule={(tx) => {
           setDialogOpen(false)
           setEditingTx(null)

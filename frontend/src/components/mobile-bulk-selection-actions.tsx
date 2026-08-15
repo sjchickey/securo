@@ -1,5 +1,5 @@
 import type { Category, CategoryGroup } from '@/types'
-import { ArrowLeftRight, Check, MoreHorizontal, SlidersHorizontal, Trash2, Users, X } from 'lucide-react'
+import { ArrowLeftRight, Banknote, Check, MoreHorizontal, SlidersHorizontal, Trash2, Users, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { CategorySelect } from '@/components/category-select'
 import { Button } from '@/components/ui/button'
@@ -26,6 +26,10 @@ export type MobileBulkSelectionActionsProps = {
   onOpenGroup: () => void
   onOpenTransfer: () => void
   onCreateRule?: () => void
+  /** Omitted unless the whole selection sits on one credit-card account. */
+  onMarkPaid?: () => void
+  onMarkUnpaid?: () => void
+  markPaidPending?: boolean
   onBulkDelete: () => void
   onTagInputChange: (value: string) => void
   onAddTags: (tags: string[]) => void
@@ -103,6 +107,16 @@ function BulkActionItems(props: MobileBulkSelectionActionsProps) {
         <ArrowLeftRight size={15} />{t('transactions.linkAsTransfer')}
       </DropdownMenuItem>
       {props.onCreateRule && <DropdownMenuItem onSelect={props.onCreateRule}><SlidersHorizontal size={15} />{t('transactions.createRule')}</DropdownMenuItem>}
+      {props.onMarkPaid && (
+        <DropdownMenuItem disabled={props.markPaidPending} onSelect={props.onMarkPaid}>
+          <Banknote size={15} />{t('transactions.markPaid')}
+        </DropdownMenuItem>
+      )}
+      {props.onMarkUnpaid && (
+        <DropdownMenuItem disabled={props.markPaidPending} onSelect={props.onMarkUnpaid}>
+          <X size={15} />{t('transactions.markUnpaid')}
+        </DropdownMenuItem>
+      )}
       <DropdownMenuItem onSelect={props.onBulkDelete} className="text-destructive">
         <Trash2 size={15} />{t('transactions.bulkDelete')}
       </DropdownMenuItem>

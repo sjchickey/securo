@@ -91,6 +91,21 @@ class CreditCardBillRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UnpaidCategoryRead(BaseModel):
+    """One category's outstanding balance on a credit card.
+
+    Spans every statement, not just the one on screen — see
+    `account_service.get_unpaid_by_category`.
+    """
+
+    category_id: Optional[uuid.UUID] = None
+    name: Optional[str] = None
+    color: Optional[str] = None
+    icon: Optional[str] = None
+    total: float
+    count: int
+
+
 class AccountSummary(BaseModel):
     account_id: uuid.UUID
     current_balance: float
@@ -99,3 +114,7 @@ class AccountSummary(BaseModel):
     current_balance_primary: Optional[float] = None
     monthly_income_primary: Optional[float] = None
     monthly_expenses_primary: Optional[float] = None
+    # Statement paid/unpaid split. None for non-credit-card accounts, where
+    # payment tracking doesn't apply. Together these sum to monthly_expenses.
+    paid_total: Optional[float] = None
+    unpaid_total: Optional[float] = None

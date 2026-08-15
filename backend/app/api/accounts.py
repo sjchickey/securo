@@ -18,6 +18,7 @@ from app.schemas.account import (
     AccountSummary,
     AccountUpdate,
     CreditCardBillRead,
+    UnpaidCategoryRead,
 )
 from app.services import account_service
 from app.services.fx_rate_service import convert
@@ -101,6 +102,26 @@ async def get_account_balance_history(
             point["balance_primary"] = float(converted)
 
     return history
+
+
+@router.get("/{account_id}/unpaid-by-category", response_model=list[UnpaidCategoryRead])
+async def get_account_unpaid_by_category(
+    account_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Outstanding charges grouped by category, across all statements.
+
+    Answers "which budget do I need to cover this from". Not date-filtered on
+    purpose, so this total normally exceeds the on-screen statement's unpaid
+    figure. Returns [] for non-credit-card accounts.
+    """
+    rows = await account_service.get_unpaid_by_category(
+        session, account_id, ctx.workspace.id,
+    )
+    if rows is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+    return rows
 
 
 @router.get("/{account_id}/bills", response_model=list[CreditCardBillRead])

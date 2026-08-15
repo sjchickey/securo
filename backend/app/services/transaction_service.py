@@ -1,6 +1,6 @@
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional, cast
 
@@ -122,6 +122,7 @@ async def get_transactions(
     max_amount: Optional[float] = None,
     account_types: Optional[list[str]] = None,
     status: Optional[str] = None,
+    is_paid: Optional[bool] = None,
     include_summary: bool = False,
     user_pnl_only: bool = False,
 ) -> tuple[list[Transaction], int, Optional[dict]]:
@@ -262,6 +263,8 @@ async def get_transactions(
         base_query = base_query.where(Transaction.type == txn_type)
     if status:
         base_query = base_query.where(Transaction.status == status)
+    if is_paid is not None:
+        base_query = base_query.where(Transaction.is_paid == is_paid)
     if currency:
         # Native-currency filter — match the column verbatim. Lets agents
         # answer "do I have any EUR transactions?" without text-searching
@@ -472,6 +475,10 @@ async def get_transactions(
         "account": Account.name,
         "type": Transaction.type,
         "status": Transaction.status,
+        # `paid` matches the grid column id the UI sends; `is_paid` matches the
+        # field name on the API payload, which is what agents reach for.
+        "paid": Transaction.is_paid,
+        "is_paid": Transaction.is_paid,
         "created_at": Transaction.created_at,
     }
     chosen_col = sort_columns.get(sort_by) if sort_by else None
@@ -1585,6 +1592,194 @@ async def bulk_update_category(
     )
     await session.commit()
     return cast(CursorResult, result).rowcount
+
+
+def _credit_card_account_ids():
+    """Subquery of credit-card account ids.
+
+    Payment tracking only means something on a card: a checking-account debit
+    has already left the account, so "have I paid this?" has no answer. Scoped
+    as a subquery rather than an UPDATE..FROM join because the test suite runs
+    on SQLite, which doesn't support the latter.
+    """
+    return select(Account.id).where(Account.type == "credit_card")
+
+
+async def _card_scoped_ids(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    transaction_ids: list[uuid.UUID],
+) -> list[uuid.UUID]:
+    """Narrow caller-supplied ids to card transactions in this workspace."""
+    result = await session.execute(
+        select(Transaction.id).where(
+            Transaction.id.in_(transaction_ids),
+            Transaction.workspace_id == workspace_id,
+            Transaction.account_id.in_(_credit_card_account_ids()),
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def bulk_mark_paid(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    transaction_ids: list[uuid.UUID],
+    paid_date: Optional[datetime] = None,
+    covered_by_payment_id: Optional[uuid.UUID] = None,
+    clear_payment_link: bool = False,
+) -> tuple[int, int]:
+    """Mark credit-card transactions as paid, optionally linking the payment
+    that settled them.
+
+    `covered_by_payment_id=None` leaves an existing link untouched, so a plain
+    re-mark doesn't silently unlink. Pass `clear_payment_link=True` to drop it
+    deliberately — that's the "no covering payment" case, which callers have to
+    ask for explicitly rather than getting by omission.
+
+    Non-card rows and rows outside the workspace are skipped rather than
+    rejected, so a mixed selection still does the useful thing. Returns
+    ``(updated, skipped)`` so callers can surface what was dropped.
+    """
+    if not transaction_ids:
+        return 0, 0
+
+    eligible = await _card_scoped_ids(session, workspace_id, transaction_ids)
+    skipped = len(set(transaction_ids)) - len(eligible)
+    if not eligible:
+        return 0, skipped
+
+    values: dict = {
+        "is_paid": True,
+        "paid_date": paid_date or datetime.now(timezone.utc),
+    }
+    if clear_payment_link and covered_by_payment_id is None:
+        values["covered_by_payment_id"] = None
+
+    # Only touch the link when the caller actually supplied one — passing it
+    # unconditionally would silently unlink rows on a plain "mark as paid".
+    if covered_by_payment_id is not None:
+        if covered_by_payment_id in set(eligible):
+            raise ValueError("A payment cannot cover itself")
+
+        payment = (
+            await session.execute(
+                select(Transaction)
+                .where(
+                    Transaction.id == covered_by_payment_id,
+                    Transaction.workspace_id == workspace_id,
+                    Transaction.account_id.in_(_credit_card_account_ids()),
+                )
+            )
+        ).scalar_one_or_none()
+        if payment is None:
+            raise ValueError("Payment transaction not found")
+
+        # A payment settles charges on the card it was made against; letting
+        # it claim charges from another card would corrupt both statements.
+        other_accounts = (
+            await session.execute(
+                select(func.count())
+                .select_from(Transaction)
+                .where(
+                    Transaction.id.in_(eligible),
+                    Transaction.account_id != payment.account_id,
+                )
+            )
+        ).scalar() or 0
+        if other_accounts:
+            raise ValueError("Payment must be on the same account as the transactions it covers")
+
+        values["covered_by_payment_id"] = covered_by_payment_id
+
+    result = await session.execute(
+        update(Transaction).where(Transaction.id.in_(eligible)).values(**values)
+    )
+    await session.commit()
+    return cast(CursorResult, result).rowcount, skipped
+
+
+async def get_payment_coverage(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    transaction_id: uuid.UUID,
+) -> Optional[tuple[Optional[Transaction], list[Transaction]]]:
+    """Both directions of the covering-payment link for one transaction.
+
+    Returns ``(covered_by, covers)`` — the payment that settled this charge,
+    and the charges this transaction settled. A row is normally one or the
+    other, but nothing stops it being both, so both are always resolved.
+    Returns None when the transaction isn't in the workspace.
+    """
+    anchor = await get_transaction(session, transaction_id, workspace_id)
+    if not anchor:
+        return None
+
+    load = (
+        selectinload(Transaction.category),
+        selectinload(Transaction.account),
+        selectinload(Transaction.payee_entity),
+        selectinload(Transaction.splits),
+    )
+
+    covered_by = None
+    if anchor.covered_by_payment_id is not None:
+        covered_by = (
+            await session.execute(
+                select(Transaction)
+                .where(
+                    Transaction.id == anchor.covered_by_payment_id,
+                    Transaction.workspace_id == workspace_id,
+                )
+                .options(*load)
+            )
+        ).scalars().first()
+
+    covers = list(
+        (
+            await session.execute(
+                select(Transaction)
+                .where(
+                    Transaction.covered_by_payment_id == transaction_id,
+                    Transaction.workspace_id == workspace_id,
+                )
+                .options(*load)
+                .order_by(Transaction.date.desc(), Transaction.created_at.desc())
+            )
+        ).scalars().all()
+    )
+
+    for tx in ([covered_by] if covered_by else []) + covers:
+        tx.payee_name = tx.payee_entity.name if tx.payee_entity else None
+
+    return covered_by, covers
+
+
+async def bulk_mark_unpaid(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    transaction_ids: list[uuid.UUID],
+) -> tuple[int, int]:
+    """Clear the paid flag on credit-card transactions.
+
+    Drops the covering-payment link too: an unpaid charge by definition has no
+    payment settling it. Returns ``(updated, skipped)``.
+    """
+    if not transaction_ids:
+        return 0, 0
+
+    eligible = await _card_scoped_ids(session, workspace_id, transaction_ids)
+    skipped = len(set(transaction_ids)) - len(eligible)
+    if not eligible:
+        return 0, skipped
+
+    result = await session.execute(
+        update(Transaction)
+        .where(Transaction.id.in_(eligible))
+        .values(is_paid=False, paid_date=None, covered_by_payment_id=None)
+    )
+    await session.commit()
+    return cast(CursorResult, result).rowcount, skipped
 
 
 _TAG_CHAR_CLASS = r"[\wÀ-ž-]"

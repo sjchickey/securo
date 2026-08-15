@@ -191,6 +191,10 @@ export interface AccountSummary {
   current_balance_primary: number | null
   monthly_income_primary: number | null
   monthly_expenses_primary: number | null
+  // Statement paid/unpaid split, in the account's currency. Null for non-card
+  // accounts; otherwise the two sum to monthly_expenses.
+  paid_total: number | null
+  unpaid_total: number | null
 }
 
 export interface Transaction {
@@ -242,6 +246,38 @@ export interface Transaction {
   parent_owner_name?: string | null
   // Flag to exclude this transaction from reports and dashboard aggregations
   is_ignored: boolean
+  // Payment tracking: whether this transaction has been marked as paid
+  is_paid: boolean
+  // When this transaction was marked as paid (ISO datetime string)
+  paid_date: string | null
+  // Optional reference to the payment transaction that covered this one
+  covered_by_payment_id: string | null
+}
+
+// One category's outstanding balance on a credit card. Spans every statement,
+// not just the one on screen, so this total normally exceeds the statement's
+// unpaid_total. `category_id`/`name` are null for uncategorized charges.
+export interface UnpaidCategory {
+  category_id: string | null
+  name: string | null
+  color: string | null
+  icon: string | null
+  total: number
+  count: number
+}
+
+// Both directions of the covering-payment link for one transaction.
+export interface PaymentCoverage {
+  covered_by: Transaction | null
+  covers: Transaction[]
+}
+
+// Result of bulk-mark-paid / bulk-mark-unpaid. `skipped` counts ids the
+// backend dropped because they weren't credit-card transactions — payment
+// tracking only applies to cards.
+export interface BulkPaidResult {
+  updated: number
+  skipped: number
 }
 
 // Scope for installment-series edits/deletes: "this" (default) only touches

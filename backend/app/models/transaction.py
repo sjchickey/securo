@@ -103,6 +103,21 @@ class Transaction(Base):
         nullable=True,
         index=True,
     )
+    # Payment tracking: whether this transaction has been marked as paid.
+    # Used for credit card transactions to track which charges have been paid.
+    is_paid: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # When this transaction was marked as paid (if is_paid is True).
+    paid_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Optional self-referential FK linking to a payment transaction that covered this transaction.
+    # Used to track which payment covered which transactions (e.g., a "Payment" type transaction
+    # that covered multiple credit card charges). ON DELETE SET NULL ensures the link is cleared
+    # if the payment transaction is deleted.
+    covered_by_payment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("transactions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     account: Mapped["Account"] = relationship(back_populates="transactions")
@@ -113,6 +128,21 @@ class Transaction(Base):
         back_populates="transactions"
     )
     import_log: Mapped[Optional["ImportLog"]] = relationship(back_populates="transactions")
+    # Self-referential: the card payment that settled this charge, and the
+    # inverse collection of charges a payment settled. `foreign_keys` has to
+    # be spelled out on both sides — the table has several UUID FKs, so the
+    # join is otherwise ambiguous.
+    covered_by_payment: Mapped[Optional["Transaction"]] = relationship(
+        "Transaction",
+        remote_side="Transaction.id",
+        foreign_keys="Transaction.covered_by_payment_id",
+        back_populates="covers_transactions",
+    )
+    covers_transactions: Mapped[list["Transaction"]] = relationship(
+        "Transaction",
+        foreign_keys="Transaction.covered_by_payment_id",
+        back_populates="covered_by_payment",
+    )
     attachments: Mapped[list["TransactionAttachment"]] = relationship(
         back_populates="transaction", cascade="all, delete-orphan"
     )

@@ -15,7 +15,7 @@ from app.core.workspace_context import (
     current_workspace,
     current_writable_workspace,
 )
-from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, CreateCounterpartRequest, InstallmentSeriesCreate, LinkTransferRequest, TransactionBulkDeleteRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
+from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, BulkMarkPaidRequest, BulkMarkUnpaidRequest, BulkPaidResponse, CreateCounterpartRequest, PaymentCoverageRead, InstallmentSeriesCreate, LinkTransferRequest, TransactionBulkDeleteRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
 from app.schemas.transaction_calendar import TransactionCalendarResponse
 from app.services import transaction_service
 from app.services.admin_service import get_credit_card_accounting_mode
@@ -99,9 +99,10 @@ async def list_transactions(
     exclude_transfers: bool = Query(False),
     user_pnl_only: bool = Query(False, description="Return only rows that count toward dashboard/user income/expense totals"),
     tags: Optional[List[str]] = Query(None),
+    is_paid: Optional[bool] = Query(None, description="Filter to paid or unpaid transactions"),
     min_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount >= this value (primary currency)."),
     max_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount <= this value (primary currency)."),
-    sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status). Default: date desc."),
+    sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status|paid). Default: date desc."),
     sort_dir: str = Query("desc", regex="^(asc|desc)$"),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
@@ -116,6 +117,7 @@ async def list_transactions(
         txn_type=type, exclude_transfers=exclude_transfers,
         user_pnl_only=user_pnl_only,
         status=status,
+        is_paid=is_paid,
         accounting_mode=accounting_mode,
         tags=tags,
         bill_id=bill_id,
@@ -167,6 +169,7 @@ async def export_transactions(
     uncategorized: bool = Query(False),
     type: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    is_paid: Optional[bool] = Query(None, description="Filter to paid or unpaid transactions (credit cards)."),
     tags: Optional[List[str]] = Query(None),
     transaction_ids: Optional[List[uuid.UUID]] = Query(None, description="If set, exports exactly these rows (scoped to the workspace); other filters are ignored."),
     ctx: WorkspaceContext = Depends(current_workspace),
@@ -188,7 +191,8 @@ async def export_transactions(
             account_ids=_merge_id_filters(account_id, account_ids),
             category_ids=_merge_id_filters(category_id, category_ids),
             payee_id=payee_id, from_date=from_date, to_date=to_date,
-            search=q, uncategorized=uncategorized, txn_type=type, status=status, skip_pagination=True,
+            search=q, uncategorized=uncategorized, txn_type=type, status=status,
+            is_paid=is_paid, skip_pagination=True,
             accounting_mode=accounting_mode,
             tags=tags,
         )
@@ -196,7 +200,7 @@ async def export_transactions(
     output = io.StringIO()
     output.write("﻿")  # UTF-8 BOM for Excel
     writer = csv.writer(output)
-    writer.writerow(["date", "description", "amount", "type", "currency", "category", "account", "payee", "payee_name", "notes", "status", "source", "amount_primary", "fx_rate_used"])
+    writer.writerow(["date", "description", "amount", "type", "currency", "category", "account", "payee", "payee_name", "notes", "status", "is_paid", "paid_date", "source", "amount_primary", "fx_rate_used"])
     for tx in transactions:
         writer.writerow([
             tx.date.isoformat(),
@@ -210,6 +214,8 @@ async def export_transactions(
             getattr(tx, "payee_name", "") or "",
             tx.notes or "",
             tx.status,
+            "true" if tx.is_paid else "false",
+            tx.paid_date.isoformat() if tx.paid_date else "",
             tx.source,
             str(tx.amount_primary) if tx.amount_primary is not None else "",
             str(tx.fx_rate_used) if tx.fx_rate_used is not None else "",
@@ -281,6 +287,44 @@ async def bulk_add_to_group(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.patch("/bulk-mark-paid", response_model=BulkPaidResponse)
+async def bulk_mark_paid(
+    data: BulkMarkPaidRequest,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Mark credit-card charges as paid. Non-card rows are reported as skipped."""
+    try:
+        updated, skipped = await transaction_service.bulk_mark_paid(
+            session,
+            ctx.workspace.id,
+            data.transaction_ids,
+            paid_date=data.paid_date,
+            covered_by_payment_id=data.covered_by_payment_id,
+            # An explicit `"covered_by_payment_id": null` means "unlink";
+            # omitting the field entirely leaves any existing link alone.
+            clear_payment_link=(
+                "covered_by_payment_id" in data.model_fields_set
+                and data.covered_by_payment_id is None
+            ),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return {"updated": updated, "skipped": skipped}
+
+
+@router.patch("/bulk-mark-unpaid", response_model=BulkPaidResponse)
+async def bulk_mark_unpaid(
+    data: BulkMarkUnpaidRequest,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    updated, skipped = await transaction_service.bulk_mark_unpaid(
+        session, ctx.workspace.id, data.transaction_ids
+    )
+    return {"updated": updated, "skipped": skipped}
 
 
 @router.post("/transfer", response_model=TransferRead, status_code=status.HTTP_201_CREATED)
@@ -405,6 +449,33 @@ async def get_transfer_pair(
     return _tag_fx_fallback(
         TransactionRead.model_validate(pair, from_attributes=True), ctx.user.primary_currency
     )
+
+
+@router.get("/{transaction_id}/payment-coverage", response_model=PaymentCoverageRead)
+async def get_payment_coverage(
+    transaction_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Which payment settled this charge, and which charges it settles."""
+    coverage = await transaction_service.get_payment_coverage(
+        session, ctx.workspace.id, transaction_id
+    )
+    if coverage is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transaction not found")
+    covered_by, covers = coverage
+    primary_currency = ctx.user.primary_currency
+    return {
+        "covered_by": _tag_fx_fallback(
+            TransactionRead.model_validate(covered_by, from_attributes=True), primary_currency
+        ) if covered_by else None,
+        "covers": [
+            _tag_fx_fallback(
+                TransactionRead.model_validate(tx, from_attributes=True), primary_currency
+            )
+            for tx in covers
+        ],
+    }
 
 
 @router.get("/{transaction_id}", response_model=TransactionRead)

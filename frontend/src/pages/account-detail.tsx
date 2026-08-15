@@ -8,15 +8,16 @@ import { format, addDays, addMonths, parseISO } from 'date-fns'
 import { accounts, transactions, categories as categoriesApi, categoryGroups as categoryGroupsApi } from '@/lib/api'
 import { localDateString } from '@/lib/date-utils'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
-import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
 import { toast } from 'sonner'
 import type { CreditCardBill, Transaction } from '@/types'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, ArrowLeftRight, CalendarClock, ChevronLeft, ChevronRight, Clock, EyeClosed, HelpCircle, Paperclip, Pencil, X } from 'lucide-react'
+import { ArrowLeft, ArrowLeftRight, Banknote, CalendarClock, Check, ChevronLeft, ChevronRight, Clock, EyeClosed, HelpCircle, Paperclip, Pencil, X } from 'lucide-react'
 import { MobileTransactionRow } from '@/components/mobile-transaction-row'
 import { CategoryIcon } from '@/components/category-icon'
 import { TransactionDialog, extractApiError, type TransactionSavePayload } from '@/components/transaction-dialog'
+import { MarkPaidDialog } from '@/components/mark-paid-dialog'
 import { TransferDialog } from '@/components/transfer-dialog'
 import { DatePickerInput } from '@/components/ui/date-picker-input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
@@ -585,6 +586,37 @@ export default function AccountDetailPage() {
     onError: () => toast.error(t('common.error')),
   })
 
+  // Mark every unpaid charge in the statement currently on screen. Scoped to
+  // the rows already loaded for this cycle, so it settles exactly what the
+  // user is looking at rather than the card's whole history.
+  const [markPaidOpen, setMarkPaidOpen] = useState(false)
+  // Outstanding balance grouped by category, across *all* statements — so it
+  // normally exceeds the on-screen statement's unpaid figure. Answers "which
+  // budget do I move funds from".
+  const { data: unpaidByCategory } = useQuery({
+    queryKey: ['accounts', id, 'unpaid-by-category'],
+    queryFn: () => accounts.unpaidByCategory(id!),
+    enabled: !!id && account?.type === 'credit_card',
+  })
+  // Charges only: credits are the payments themselves, and the opening balance
+  // is bookkeeping the list carries but which no payment ever settles.
+  const unpaidStatementIds = useMemo(
+    () => (txData?.items ?? [])
+      .filter(tx => !tx.is_paid && tx.type === 'debit' && tx.source !== 'opening_balance')
+      .map(tx => tx.id),
+    [txData?.items],
+  )
+  const markStatementPaidMutation = useMutation({
+    mutationFn: ({ paidDate, paymentId }: { paidDate: string; paymentId?: string }) =>
+      transactions.bulkMarkPaid(unpaidStatementIds, `${paidDate}T00:00:00Z`, paymentId),
+    onSuccess: (result) => {
+      invalidateFinancialQueries(queryClient)
+      setMarkPaidOpen(false)
+      toast.success(t('transactions.bulkMarkPaidSuccess', { count: result.updated }))
+    },
+    onError: (error) => toast.error(extractApiError(error)),
+  })
+
   const [ccSettingsOpen, setCcSettingsOpen] = useState(false)
   const ccSettingsMutation = useMutation({
     mutationFn: (data: { credit_limit?: number | null; statement_close_day?: number | null; payment_due_day?: number | null }) =>
@@ -837,6 +869,18 @@ export default function AccountDetailPage() {
             >
               <ArrowLeftRight className="h-4 w-4 mr-1" />
               {t('transactions.transfer')}
+            </Button>
+          )}
+          {!account.is_closed && canWrite && isCreditCard && unpaidStatementIds.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => setMarkPaidOpen(true)}
+              disabled={markStatementPaidMutation.isPending}
+            >
+              <Banknote className="h-4 w-4 mr-1" />
+              {t('accounts.markStatementPaid')}
             </Button>
           )}
         </div>
@@ -1113,6 +1157,14 @@ export default function AccountDetailPage() {
                   {deltaPct > 0 ? '+' : ''}{deltaPct.toFixed(0)}% <span className="text-muted-foreground font-normal">vs {prevCycleLabel}</span>
                 </p>
               )}
+              {summary?.unpaid_total != null && (
+                <p className="text-[10px] sm:text-xs font-medium mt-0.5 tabular-nums text-muted-foreground truncate">
+                  {t('accounts.cycleUnpaid')}:{' '}
+                  <span className={summary.unpaid_total > 0 ? 'text-foreground' : 'text-emerald-600'}>
+                    {mask(formatCurrency(summary.unpaid_total, displayCurrency, locale))}
+                  </span>
+                </p>
+              )}
             </div>
             <div className="bg-card rounded-xl border border-border shadow-sm p-3 sm:p-4 overflow-hidden">
               <p className="text-[10px] sm:text-xs font-medium text-muted-foreground mb-1 flex items-center gap-1 truncate">
@@ -1268,6 +1320,59 @@ export default function AccountDetailPage() {
                 </p>
               </div>
             </div>
+          </div>
+        )
+      })()}
+
+      {/* Unpaid by category. Deliberately not scoped to the statement on
+          screen: an unpaid charge from an older cycle still has to be covered,
+          so the hint spells out that the totals differ on purpose. */}
+      {isCreditCard && !!unpaidByCategory?.length && (() => {
+        const total = unpaidByCategory.reduce((sum, row) => sum + row.total, 0)
+        return (
+          <div className="bg-card rounded-xl border border-border shadow-sm p-4 sm:p-5 mb-6">
+            <div className="flex items-baseline justify-between gap-3 mb-3">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-foreground">
+                  {t('accounts.unpaidByCategory')}
+                </h3>
+                <p className="text-[11px] text-muted-foreground">
+                  {t('accounts.unpaidByCategoryHint')}
+                </p>
+              </div>
+              <p className="shrink-0 text-base sm:text-lg font-bold tabular-nums text-foreground">
+                {mask(formatCurrency(total, account.currency, locale))}
+              </p>
+            </div>
+            <ul className="space-y-1.5">
+              {unpaidByCategory.map((row) => {
+                const pct = total > 0 ? (row.total / total) * 100 : 0
+                return (
+                  <li key={row.category_id ?? 'uncategorized'} className="flex items-center gap-3">
+                    <CategoryIcon icon={row.icon} color={row.color} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="min-w-0 truncate text-sm text-foreground">
+                          {row.name ?? t('transactions.uncategorized')}
+                        </span>
+                        <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
+                          {mask(formatCurrency(row.total, account.currency, locale))}
+                        </span>
+                      </div>
+                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full"
+                          style={{ width: `${pct}%`, backgroundColor: row.color ?? '#6B7280' }}
+                        />
+                      </div>
+                    </div>
+                    <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
+                      {row.count}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
           </div>
         )
       })()}
@@ -1477,7 +1582,7 @@ export default function AccountDetailPage() {
                     return (
                       <tr
                         key={tx.id}
-                        className={`border-b last:border-0 transition-colors ${isOpening ? 'bg-muted/60' : isPending ? 'opacity-60' : canWrite ? 'hover:bg-muted cursor-pointer' : ''}`}
+                        className={`border-b last:border-0 transition-colors ${isOpening ? 'bg-muted/60' : isPending ? 'opacity-60' : canWrite ? 'hover:bg-muted cursor-pointer' : ''} ${getPaidRowClassName(tx)}`}
                         onClick={() => {
                           if (!isOpening && canWrite) {
                             setEditingTx(tx)
@@ -1546,6 +1651,24 @@ export default function AccountDetailPage() {
                                 {formatDateStr(tx.effective_bill_date, dateLocale)}
                               </span>
                             )}
+                            {tx.is_paid && (
+                              <span
+                                title={tx.paid_date
+                                  ? t('transactions.paidOn', { date: new Date(tx.paid_date).toLocaleDateString(dateLocale) })
+                                  : t('transactions.paidYes')}
+                                className="shrink-0 inline-flex items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 p-0.5 dark:border-emerald-500/30 dark:bg-emerald-500/10"
+                              >
+                                <Check size={12} className="text-emerald-600" role="img" aria-label={t('transactions.paidYes')} />
+                              </span>
+                            )}
+                            {tx.covered_by_payment_id && (
+                              <span
+                                title={t('transactions.coveredByPayment')}
+                                className="shrink-0 inline-flex items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 p-0.5 dark:border-emerald-500/30 dark:bg-emerald-500/10"
+                              >
+                                <Banknote size={12} className="text-emerald-600" role="img" aria-label={t('transactions.coveredByPayment')} />
+                              </span>
+                            )}
                             {(tx.attachment_count ?? 0) > 0 && (
                               <Paperclip size={12} className="ml-2 inline text-muted-foreground" />
                             )}
@@ -1566,7 +1689,9 @@ export default function AccountDetailPage() {
                           )}
                         </td>
                         <td className={`px-2 sm:px-4 py-3 text-right text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap ${tx.is_ignored ? 'text-gray-500' : tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
-                          {mask(`${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '-'}${formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}`)}
+                          <span className="transaction-amount">
+                            {mask(`${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '-'}${formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}`)}
+                          </span>
                           {tx.currency !== userCurrency && tx.amount_primary != null && (
                             <span className="block text-[10px] text-muted-foreground tabular-nums">
                               {mask(formatCurrency(Math.abs(tx.amount_primary), userCurrency, locale))}
@@ -1600,9 +1725,19 @@ export default function AccountDetailPage() {
         }}
         onDelete={editingTx ? () => deleteMutation.mutate(editingTx.id) : undefined}
         onUnlinkTransfer={(pairId) => unlinkTransferMutation.mutate(pairId)}
+        onPaymentChanged={() => invalidateFinancialQueries(queryClient)}
         loading={updateMutation.isPending || deleteMutation.isPending || unlinkTransferMutation.isPending}
         error={updateMutation.error ? extractApiError(updateMutation.error) : null}
         isSynced={editingTx?.source === 'sync'}
+      />
+
+      <MarkPaidDialog
+        open={markPaidOpen}
+        onClose={() => setMarkPaidOpen(false)}
+        transactionIds={unpaidStatementIds}
+        accountId={id ?? null}
+        onConfirm={(paidDate, paymentId) => markStatementPaidMutation.mutate({ paidDate, paymentId })}
+        loading={markStatementPaidMutation.isPending}
       />
 
       <TransferDialog

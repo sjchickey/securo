@@ -56,6 +56,9 @@ import type {
   TransactionEditPayload,
   InstallmentSeriesInput,
   TransactionApplyScope,
+  BulkPaidResult,
+  PaymentCoverage,
+  UnpaidCategory,
 } from '@/types'
 
 const api = axios.create({
@@ -411,6 +414,12 @@ export const accounts = {
     const { data } = await api.get(`/accounts/${id}/balance-history`, { params: { from, to } })
     return data
   },
+  // Not date-scoped on purpose: this answers "what do I still owe", so unpaid
+  // charges from older statements have to keep counting.
+  unpaidByCategory: async (id: string): Promise<UnpaidCategory[]> => {
+    const { data } = await api.get(`/accounts/${id}/unpaid-by-category`)
+    return data
+  },
   bills: async (id: string, limit = 24): Promise<CreditCardBill[]> => {
     const { data } = await api.get(`/accounts/${id}/bills`, { params: { limit } })
     return data
@@ -436,6 +445,7 @@ export const transactions = {
     uncategorized?: boolean
     type?: string
     status?: string
+    is_paid?: boolean
     from?: string
     to?: string
     bill_id?: string
@@ -558,6 +568,32 @@ export const transactions = {
     })
     return data
   },
+  // `skipped` counts ids the backend dropped because they weren't credit-card
+  // transactions — payment tracking only applies to cards.
+  // `coveredByPaymentId`: an id links that payment, explicit `null` unlinks,
+  // and `undefined` leaves any existing link untouched.
+  bulkMarkPaid: async (
+    transactionIds: string[],
+    paidDate?: string,
+    coveredByPaymentId?: string | null,
+  ): Promise<BulkPaidResult> => {
+    const { data } = await api.patch('/transactions/bulk-mark-paid', {
+      transaction_ids: transactionIds,
+      ...(paidDate ? { paid_date: paidDate } : {}),
+      ...(coveredByPaymentId !== undefined ? { covered_by_payment_id: coveredByPaymentId } : {}),
+    })
+    return data
+  },
+  bulkMarkUnpaid: async (transactionIds: string[]): Promise<BulkPaidResult> => {
+    const { data } = await api.patch('/transactions/bulk-mark-unpaid', {
+      transaction_ids: transactionIds,
+    })
+    return data
+  },
+  paymentCoverage: async (id: string): Promise<PaymentCoverage> => {
+    const { data } = await api.get(`/transactions/${id}/payment-coverage`)
+    return data
+  },
   linkTransfer: async (transactionIds: string[]): Promise<{ debit: Transaction; credit: Transaction; transfer_pair_id: string }> => {
     const { data } = await api.post('/transactions/link-transfer', {
       transaction_ids: transactionIds,
@@ -634,6 +670,7 @@ export const transactions = {
     uncategorized?: boolean
     type?: string
     status?: string
+    is_paid?: boolean
     from?: string
     to?: string
     q?: string

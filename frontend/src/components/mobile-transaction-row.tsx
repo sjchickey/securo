@@ -6,7 +6,7 @@ import { AlertTriangle, ArrowLeftRight, Clock, EyeClosed, Paperclip } from 'luci
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useTranslation } from 'react-i18next'
 import { formatCurrency } from '@/lib/format'
-import { shouldShowPendingBadge } from '@/lib/transaction-status'
+import { getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
 
 /** Keep long merchant references on one line when there are no word breaks. */
 function hasWordBreaks(text: string): boolean {
@@ -65,7 +65,7 @@ export function MobileTransactionRow({
         selected ? 'bg-primary/5' : 'bg-card'
       } ${highlighted ? 'securo-highlight-flash' : ''} ${
         tx.is_shared || !canWrite ? 'cursor-default' : 'cursor-pointer active:bg-muted/60'
-      }`}
+      } ${getPaidRowClassName(tx)}`}
       onClick={() => {
         if (tx.is_shared) return
         if (!canWrite) return
@@ -155,7 +155,7 @@ export function MobileTransactionRow({
 
       {/* Amount */}
       <div className="shrink-0 text-right">
-        <span className={`text-sm font-bold tabular-nums ${amountColor}`}>
+        <span className={`transaction-amount text-sm font-bold tabular-nums ${amountColor}`}>
           {mask(
             `${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '\u2212'}${formatCurrency(
               Math.abs(displayAmount),
