@@ -114,6 +114,14 @@ class AccountSummary(BaseModel):
     current_balance_primary: Optional[float] = None
     monthly_income_primary: Optional[float] = None
     monthly_expenses_primary: Optional[float] = None
+    # Account balance carried into this window, from transactions bucketed
+    # before it. Anchors the transaction list's running balance.
+    opening_balance: float = 0.0
+    opening_balance_primary: Optional[float] = None
+    # Balance at the end of the window — the statement closing balance for a
+    # card. Counts payments and transfers, unlike monthly_expenses.
+    closing_balance: float = 0.0
+    closing_balance_primary: Optional[float] = None
     # Statement paid/unpaid split. None for non-credit-card accounts, where
     # payment tracking doesn't apply. Together these sum to monthly_expenses.
     paid_total: Optional[float] = None

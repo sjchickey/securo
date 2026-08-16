@@ -185,14 +185,24 @@ async def get_unpaid_by_category(
     session: AsyncSession,
     account_id: uuid.UUID,
     workspace_id: uuid.UUID,
+    date_from: Optional[_Date] = None,
+    date_to: Optional[_Date] = None,
+    bill_id: Optional[uuid.UUID] = None,
+    unbilled_only: bool = False,
+    all_statements: bool = False,
 ) -> Optional[list[dict]]:
-    """Outstanding charges on a card, grouped by category, biggest first.
+    """Outstanding charges grouped by category, biggest first.
 
-    Deliberately *not* windowed to a statement: the question this answers is
-    "what do I still owe and out of which budget", so a charge left unpaid
-    three cycles ago has to keep showing up. That means this total will
-    normally exceed the statement view's `unpaid_total`, which is scoped to
-    the cycle on screen.
+    By default windowed with the same `_cycle_scope` predicate as
+    `get_account_summary`, so the breakdown reconciles with the `unpaid_total`
+    shown beside it. Pass `all_statements=True` for everything still owed
+    regardless of cycle — that total will exceed the statement figure, which is
+    the point of offering both.
+
+    Card payments are excluded either way: `counts_as_pnl()` drops
+    transfer-paired rows and anything in a treat-as-transfer category, so a
+    payment settling an earlier statement can't net against these charges.
+    Refunds, being ordinary credits, still do — they reverse a real charge.
 
     Returns None when the account doesn't exist in the workspace, and [] for
     non-credit-card accounts, mirroring `get_credit_card_bills`.
@@ -209,7 +219,8 @@ async def get_unpaid_by_category(
         else_=func.abs(_effective_amount(account.currency)),
     )
 
-    result = await session.execute(
+    today = _Date.today()
+    base = (
         select(
             Transaction.category_id,
             Category.name,
@@ -226,7 +237,18 @@ async def get_unpaid_by_category(
             Transaction.source != "opening_balance",
             counts_as_pnl(),
         )
-        .group_by(Transaction.category_id, Category.name, Category.color, Category.icon)
+    )
+    scoped = base if all_statements else _cycle_scope(
+        base,
+        bill_id=bill_id,
+        unbilled_only=unbilled_only,
+        date_from=date_from or today.replace(day=1),
+        date_to=date_to or today,
+    )
+    result = await session.execute(
+        scoped.group_by(
+            Transaction.category_id, Category.name, Category.color, Category.icon
+        )
     )
 
     rows = [
@@ -690,6 +712,88 @@ async def reopen_account(
     return account
 
 
+def _cycle_scope(
+    query,
+    *,
+    bill_id: Optional[uuid.UUID],
+    unbilled_only: bool,
+    date_from: _Date,
+    date_to: _Date,
+):
+    """Restrict a query to one credit-card statement window.
+
+    Shared by `get_account_summary` and `get_unpaid_by_category` on purpose:
+    the two render side by side on the statement view, so any drift between
+    their windows would show up as two totals that don't reconcile.
+
+    Bill-driven filter (issue #92): when the caller passes bill_id, include
+      (a) txs linked to this bill via Pluggy's billId mapping, AND
+      (b) txs with NO bill_id (manual entries, OFX/CSV imports, recurring
+          fills) whose bucketing date is in the cycle window — without (b)
+          we'd drop user-added compensations for missing provider txs.
+    Without bill_id (cycle-math or non-CC), apply the date window straight.
+    """
+    from sqlalchemy import and_ as _and, not_ as _not  # local: only for scope
+
+    # Bucketing date: for credit-card txs the user can override which cycle a
+    # tx belongs to via `effective_bill_date`. Honor that first so the totals
+    # agree with the transactions list (issue #92).
+    bucket_date = func.coalesce(Transaction.effective_bill_date, Transaction.date)
+
+    # Resolve the active bill's due_date once so the pending-exclusion can
+    # trust our cycle-math pre-classification (see get_transactions).
+    active_due_subq = (
+        select(CreditCardBill.due_date)
+        .where(CreditCardBill.id == bill_id)
+        .scalar_subquery()
+    ) if bill_id is not None else None
+
+    if bill_id is not None:
+        unlinked_in_window = _and(
+            # Defer sync-pending txs only when their effective_date does NOT
+            # match this bill — i.e., cycle math placed them in a different
+            # bill. If effective_date matches, the tx is pre-classified to
+            # this bill and we include it.
+            #
+            # Manual override (effective_bill_date) bypasses the exclusion
+            # entirely — the user explicitly hand-corrected the bucketing, so
+            # the totals must reflect that even if the override doesn't snap
+            # to a real bill due_date and bill_id stays null (issue #162).
+            Transaction.bill_id.is_(None),
+            _not(_and(
+                Transaction.source == "sync",
+                Transaction.status == "pending",
+                Transaction.effective_bill_date.is_(None),
+                Transaction.effective_date != active_due_subq,
+            )),
+            bucket_date >= date_from,
+            bucket_date <= date_to,
+        )
+        return query.where(or_(Transaction.bill_id == bill_id, unlinked_in_window))
+
+    # Cycle-math fallback. Opt-in `unbilled_only` excludes already-billed txs
+    # so an in-progress cycle's bar/total doesn't double-count past-bill txs
+    # whose date falls in the window (see get_transactions).
+    if unbilled_only:
+        # Forward-pointing override catch (issue #162): mirror
+        # get_transactions so the in-progress cycle's totals include txs whose
+        # manual override points past the cycle window. Without this the tx
+        # list and totals diverge — the tx shows in the list but its amount
+        # drops out of the strip pill / summary card.
+        future_override = _and(
+            Transaction.effective_bill_date.is_not(None),
+            Transaction.effective_bill_date > date_to,
+        )
+        return query.where(
+            Transaction.bill_id.is_(None),
+            or_(
+                _and(bucket_date >= date_from, bucket_date <= date_to),
+                future_override,
+            ),
+        )
+    return query.where(bucket_date >= date_from, bucket_date <= date_to)
+
+
 async def get_account_summary(
     session: AsyncSession, account_id: uuid.UUID, workspace_id: uuid.UUID,
     date_from: Optional[_Date] = None, date_to: Optional[_Date] = None,
@@ -746,74 +850,85 @@ async def get_account_summary(
     if account.type == "credit_card" and account.connection_id:
         current_balance = -current_balance
 
-    # Bucketing date: for credit-card txs the user can override which cycle
-    # a tx belongs to via `effective_bill_date`. We honor that first so the
-    # totals card and bar chart agree with the transactions list (issue #92).
-    bucket_date = func.coalesce(Transaction.effective_bill_date, Transaction.date)
-
-    # Bill-driven filter (issue #92): when the caller passes bill_id, include
-    #   (a) txs linked to this bill via Pluggy's billId mapping, AND
-    #   (b) txs with NO bill_id (manual entries, OFX/CSV imports, recurring
-    #       fills) whose bucketing date is in the cycle window — without (b)
-    #       we'd drop user-added compensations for missing provider txs.
-    # Without bill_id (cycle-math or non-CC), apply the date window straight.
-    from sqlalchemy import and_ as _and, not_ as _not  # local: only for scope
-    # Resolve the active bill's due_date once so the pending-exclusion can
-    # trust our cycle-math pre-classification (see get_transactions).
-    active_due_subq = (
-        select(CreditCardBill.due_date)
-        .where(CreditCardBill.id == bill_id)
-        .scalar_subquery()
-    ) if bill_id is not None else None
+    # Opening balance for this window: everything bucketed *before* the cycle.
+    # Anchors the transaction list's running balance so it carries forward the
+    # debt from earlier statements instead of restarting at zero each cycle.
+    #
+    # Transaction-derived even for bank-connected accounts, unlike
+    # `current_balance` above which trusts the provider — the running balance
+    # has to reconcile with the rows actually on screen, so it must be built
+    # from the same source those rows come from.
+    opening_bucket_date = func.coalesce(Transaction.effective_bill_date, Transaction.date)
+    opening_predicates = [
+        Transaction.account_id == account_id,
+        opening_bucket_date < date_from,
+        Transaction.is_ignored == False,
+        or_(
+            Transaction.category_id.is_(None),
+            Transaction.category_id.not_in(
+                select(Category.id).where(Category.is_ignored == True)
+            ),
+        ),
+    ]
+    if bill_id is not None:
+        # `_scope` pulls in rows linked to this bill regardless of their date,
+        # so any that predate the window would otherwise be counted twice.
+        opening_predicates.append(
+            or_(Transaction.bill_id.is_(None), Transaction.bill_id != bill_id)
+        )
+    opening_result = await session.execute(
+        select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (Transaction.type == "credit", effective_amount),
+                        else_=-effective_amount,
+                    )
+                ),
+                0,
+            )
+        ).where(*opening_predicates)
+    )
+    opening_balance = float(opening_result.scalar() or 0)
 
     def _scope(query):
-        if bill_id is not None:
-            unlinked_in_window = _and(
-                Transaction.bill_id.is_(None),
-                # Defer sync-pending txs only when their effective_date does
-                # NOT match this bill — i.e., cycle math placed them in a
-                # different bill. If effective_date matches, the tx is
-                # pre-classified to this bill and we include it (the
-                # in-progress case abdalanervoso reported empty).
-                #
-                # Manual override (effective_bill_date) bypasses the
-                # exclusion entirely — the user explicitly hand-corrected
-                # the bucketing, so the totals must reflect that even if
-                # the override doesn't snap to a real bill due_date and
-                # bill_id stays null (issue #162). Mirrors the same
-                # carve-out in get_transactions.
-                _not(_and(
-                    Transaction.source == "sync",
-                    Transaction.status == "pending",
-                    Transaction.effective_bill_date.is_(None),
-                    Transaction.effective_date != active_due_subq,
-                )),
-                bucket_date >= date_from,
-                bucket_date <= date_to,
-            )
-            return query.where(or_(Transaction.bill_id == bill_id, unlinked_in_window))
-        # Cycle-math fallback. Opt-in `unbilled_only` excludes already-billed
-        # txs so an in-progress cycle's bar/total doesn't double-count past-
-        # bill txs whose date falls in the window (see get_transactions).
-        if unbilled_only:
-            # Forward-pointing override catch (issue #162): mirror
-            # get_transactions so the in-progress cycle's totals include
-            # txs whose manual override points past the cycle window.
-            # Without this the tx list and totals diverge — the tx shows
-            # in the list (after the catch in get_transactions) but its
-            # amount drops out of the strip pill / summary card.
-            future_override = _and(
-                Transaction.effective_bill_date.is_not(None),
-                Transaction.effective_bill_date > date_to,
-            )
-            return query.where(
-                Transaction.bill_id.is_(None),
+        return _cycle_scope(
+            query,
+            bill_id=bill_id,
+            unbilled_only=unbilled_only,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+    # Statement closing balance: what's owed once this cycle closes. Unlike
+    # `monthly_expenses` below, this counts payments and transfers — they move
+    # the balance even though they aren't spend — so the two answer different
+    # questions and are surfaced as separate figures.
+    window_movement = await session.execute(
+        _scope(
+            select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (Transaction.type == "credit", effective_amount),
+                            else_=-effective_amount,
+                        )
+                    ),
+                    0,
+                )
+            ).where(
+                Transaction.account_id == account_id,
+                Transaction.is_ignored == False,
                 or_(
-                    _and(bucket_date >= date_from, bucket_date <= date_to),
-                    future_override,
+                    Transaction.category_id.is_(None),
+                    Transaction.category_id.not_in(
+                        select(Category.id).where(Category.is_ignored == True)
+                    ),
                 ),
             )
-        return query.where(bucket_date >= date_from, bucket_date <= date_to)
+        )
+    )
+    closing_balance = opening_balance + float(window_movement.scalar() or 0)
 
     # Income = SUM of credit transactions in window (excluding opening_balance,
     # paired transfers, and transfer-like categories).
@@ -879,6 +994,8 @@ async def get_account_summary(
         "current_balance": current_balance,
         "monthly_income": monthly_income,
         "monthly_expenses": monthly_expenses,
+        "opening_balance": opening_balance,
+        "closing_balance": closing_balance,
         "paid_total": paid_total,
         "unpaid_total": unpaid_total,
     }

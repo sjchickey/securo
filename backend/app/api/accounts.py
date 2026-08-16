@@ -71,6 +71,10 @@ async def get_account_summary(
         summary["current_balance_primary"] = float(bal)
         summary["monthly_income_primary"] = float(inc)
         summary["monthly_expenses_primary"] = float(exp)
+        opening, _ = await convert(session, Decimal(str(summary["opening_balance"])), account.currency, primary_currency)
+        summary["opening_balance_primary"] = float(opening)
+        closing, _ = await convert(session, Decimal(str(summary["closing_balance"])), account.currency, primary_currency)
+        summary["closing_balance_primary"] = float(closing)
 
     return summary
 
@@ -107,17 +111,27 @@ async def get_account_balance_history(
 @router.get("/{account_id}/unpaid-by-category", response_model=list[UnpaidCategoryRead])
 async def get_account_unpaid_by_category(
     account_id: uuid.UUID,
+    date_from: Optional[str] = Query(None, alias="from", description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, alias="to", description="YYYY-MM-DD"),
+    bill_id: Optional[uuid.UUID] = Query(None, description="Aggregate by bill_id (issue #92); takes precedence over from/to"),
+    unbilled_only: bool = Query(False, description="Cycle-math fallback only: exclude txs already linked to any bill"),
+    all_statements: bool = Query(False, description="Ignore the window and return everything still owed on this card"),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Outstanding charges grouped by category, across all statements.
+    """Outstanding charges grouped by category.
 
-    Answers "which budget do I need to cover this from". Not date-filtered on
-    purpose, so this total normally exceeds the on-screen statement's unpaid
-    figure. Returns [] for non-credit-card accounts.
+    Takes the same window arguments as /summary and shares its scoping, so by
+    default the breakdown reconciles with that statement's `unpaid_total`.
+    `all_statements` drops the window for everything still owed. Returns [] for
+    non-credit-card accounts.
     """
     rows = await account_service.get_unpaid_by_category(
         session, account_id, ctx.workspace.id,
+        date_from=date.fromisoformat(date_from) if date_from else None,
+        date_to=date.fromisoformat(date_to) if date_to else None,
+        bill_id=bill_id, unbilled_only=unbilled_only,
+        all_statements=all_statements,
     )
     if rows is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")

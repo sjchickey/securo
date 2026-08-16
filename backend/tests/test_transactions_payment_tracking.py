@@ -110,6 +110,12 @@ async def _charge(
     return tx
 
 
+def _this_month() -> dict:
+    """The default statement window the account page asks for."""
+    today = date.today()
+    return {"date_from": today.replace(day=1), "date_to": today}
+
+
 # --------------------------------------------------------------------------
 # service: mark paid / unpaid
 # --------------------------------------------------------------------------
@@ -457,6 +463,131 @@ async def test_summary_unpaid_drops_to_zero_once_paid(
 
 
 # --------------------------------------------------------------------------
+# account summary: opening balance (anchors the running-balance column)
+# --------------------------------------------------------------------------
+
+
+async def test_opening_balance_is_zero_with_no_prior_activity(
+    session, test_user, test_workspace, card
+):
+    today = date.today()
+    await _charge(session, test_user, test_workspace, card, amount="40.00", tx_date=today)
+
+    summary = await get_account_summary(
+        session, card.id, test_workspace.id,
+        date_from=today.replace(day=1), date_to=today,
+    )
+
+    assert summary["opening_balance"] == pytest.approx(0.0)
+
+
+async def test_opening_balance_carries_prior_debt(
+    session, test_user, test_workspace, card
+):
+    """Charges before the window must carry in, or the running balance would
+    restart at zero every cycle — the bug this figure exists to fix."""
+    today = date.today()
+    await _charge(session, test_user, test_workspace, card,
+                  amount="500.00", tx_date=date(2026, 1, 10))
+    await _charge(session, test_user, test_workspace, card,
+                  amount="40.00", tx_date=today)
+
+    summary = await get_account_summary(
+        session, card.id, test_workspace.id,
+        date_from=today.replace(day=1), date_to=today,
+    )
+
+    # Credit-positive convention, so a card's debt arrives negative.
+    assert summary["opening_balance"] == pytest.approx(-500.0)
+
+
+async def test_opening_balance_counts_payments(
+    session, test_user, test_workspace, card
+):
+    today = date.today()
+    await _charge(session, test_user, test_workspace, card,
+                  amount="500.00", tx_date=date(2026, 1, 10))
+    await _charge(session, test_user, test_workspace, card,
+                  amount="200.00", tx_type="credit", tx_date=date(2026, 1, 20))
+
+    summary = await get_account_summary(
+        session, card.id, test_workspace.id,
+        date_from=today.replace(day=1), date_to=today,
+    )
+
+    assert summary["opening_balance"] == pytest.approx(-300.0)
+
+
+async def test_opening_balance_ignores_ignored_transactions(
+    session, test_user, test_workspace, card
+):
+    today = date.today()
+    tx = await _charge(session, test_user, test_workspace, card,
+                       amount="500.00", tx_date=date(2026, 1, 10))
+    tx.is_ignored = True
+    await session.commit()
+
+    summary = await get_account_summary(
+        session, card.id, test_workspace.id,
+        date_from=today.replace(day=1), date_to=today,
+    )
+
+    assert summary["opening_balance"] == pytest.approx(0.0)
+
+
+async def test_closing_balance_counts_payments_but_spend_does_not(
+    session, test_user, test_workspace, card, test_categories
+):
+    """The two tiles answer different questions, so they must not agree when a
+    payment lands in the cycle: closing balance moves, cycle spend doesn't."""
+    from app.models.category import Category as CategoryModel
+
+    payments = CategoryModel(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+        name="Card payment", treat_as_transfer=True,
+    )
+    session.add(payments)
+    await session.commit()
+
+    today = date.today()
+    await _charge(session, test_user, test_workspace, card, amount="500.00",
+                  tx_date=date(2026, 1, 10), category=test_categories[0])
+    await _charge(session, test_user, test_workspace, card, amount="100.00",
+                  tx_date=today, category=test_categories[0])
+    await _charge(session, test_user, test_workspace, card, amount="200.00",
+                  tx_type="credit", tx_date=today, category=payments)
+
+    summary = await get_account_summary(
+        session, card.id, test_workspace.id,
+        date_from=today.replace(day=1), date_to=today,
+    )
+
+    # Spend ignores the payment entirely.
+    assert summary["monthly_expenses"] == pytest.approx(100.0)
+    # Closing balance: 500 owed coming in, +100 charged, -200 paid = 400 owed.
+    assert summary["opening_balance"] == pytest.approx(-500.0)
+    assert summary["closing_balance"] == pytest.approx(-400.0)
+
+
+async def test_closing_balance_equals_opening_plus_movement(
+    session, test_user, test_workspace, card, test_categories
+):
+    today = date.today()
+    await _charge(session, test_user, test_workspace, card, amount="60.00",
+                  tx_date=today, category=test_categories[0])
+    await _charge(session, test_user, test_workspace, card, amount="25.00",
+                  tx_type="credit", tx_date=today, category=test_categories[0])
+
+    summary = await get_account_summary(
+        session, card.id, test_workspace.id,
+        date_from=today.replace(day=1), date_to=today,
+    )
+
+    # -60 charged +25 refunded = -35 against a zero opening.
+    assert summary["closing_balance"] == pytest.approx(-35.0)
+
+
+# --------------------------------------------------------------------------
 # API
 # --------------------------------------------------------------------------
 
@@ -641,7 +772,7 @@ async def test_unpaid_by_category_groups_and_sorts(
     await _charge(session, test_user, test_workspace, card, amount="20.00", category=food)
     await _charge(session, test_user, test_workspace, card, amount="80.00", category=transport)
 
-    rows = await get_unpaid_by_category(session, card.id, test_workspace.id)
+    rows = await get_unpaid_by_category(session, card.id, test_workspace.id, **_this_month())
 
     assert [(r["name"], r["total"], r["count"]) for r in rows] == [
         (transport.name, 80.0, 1),
@@ -658,25 +789,110 @@ async def test_unpaid_by_category_excludes_paid_and_buckets_uncategorized(
     paid = await _charge(session, test_user, test_workspace, card, amount="99.00", category=food)
     await bulk_mark_paid(session, test_workspace.id, [paid.id])
 
-    rows = await get_unpaid_by_category(session, card.id, test_workspace.id)
+    rows = await get_unpaid_by_category(session, card.id, test_workspace.id, **_this_month())
 
     by_name = {r["name"]: r["total"] for r in rows}
     assert by_name == {food.name: 30.0, None: 15.0}
 
 
-async def test_unpaid_by_category_ignores_the_statement_window(
+async def test_unpaid_by_category_respects_the_statement_window(
     session, test_user, test_workspace, card, test_categories
 ):
-    """The whole point: an unpaid charge from months ago still has to show."""
+    """Scoped to the cycle on screen, so an older unpaid charge stays out."""
     food = test_categories[0]
     await _charge(session, test_user, test_workspace, card, amount="40.00",
                   tx_date=date(2026, 1, 5), category=food)
     await _charge(session, test_user, test_workspace, card, amount="10.00",
                   tx_date=date.today(), category=food)
 
-    rows = await get_unpaid_by_category(session, card.id, test_workspace.id)
+    today = date.today()
+    rows = await get_unpaid_by_category(
+        session, card.id, test_workspace.id,
+        date_from=today.replace(day=1), date_to=today,
+    )
+    assert [r["total"] for r in rows] == [10.0]
 
+    # Widen the window and the older charge comes back.
+    rows = await get_unpaid_by_category(
+        session, card.id, test_workspace.id,
+        date_from=date(2026, 1, 1), date_to=today,
+    )
     assert [r["total"] for r in rows] == [50.0]
+
+
+async def test_unpaid_by_category_all_statements_ignores_the_window(
+    session, test_user, test_workspace, card, test_categories
+):
+    """The toggle's "All" mode: everything still owed, whatever the cycle."""
+    food = test_categories[0]
+    await _charge(session, test_user, test_workspace, card, amount="40.00",
+                  tx_date=date(2026, 1, 5), category=food)
+    await _charge(session, test_user, test_workspace, card, amount="10.00",
+                  tx_date=date.today(), category=food)
+
+    scoped = await get_unpaid_by_category(
+        session, card.id, test_workspace.id, **_this_month()
+    )
+    every = await get_unpaid_by_category(
+        session, card.id, test_workspace.id, all_statements=True
+    )
+
+    assert [r["total"] for r in scoped] == [10.0]
+    assert [r["total"] for r in every] == [50.0]
+
+
+async def test_card_payments_never_count_against_unpaid(
+    session, test_user, test_workspace, card, test_categories
+):
+    """A payment settles an *earlier* statement, so netting it against this
+    cycle's charges would understate what's outstanding. Both existing
+    mechanisms — a treat-as-transfer category and a transfer pair — keep it
+    out, while a plain refund credit still nets."""
+    from app.models.category import Category as CategoryModel
+
+    payments = CategoryModel(
+        id=uuid.uuid4(), user_id=test_user.id, workspace_id=test_workspace.id,
+        name="Card payment", treat_as_transfer=True,
+    )
+    session.add(payments)
+    await session.commit()
+
+    today = date.today()
+    await _charge(session, test_user, test_workspace, card,
+                  amount="100.00", tx_date=today, category=test_categories[0])
+    # Payment via a treat-as-transfer category.
+    await _charge(session, test_user, test_workspace, card, amount="80.00",
+                  tx_type="credit", tx_date=today, category=payments)
+    # Refund in an ordinary category — this one *should* net.
+    await _charge(session, test_user, test_workspace, card, amount="30.00",
+                  tx_type="credit", tx_date=today, category=test_categories[0])
+
+    rows = await get_unpaid_by_category(
+        session, card.id, test_workspace.id, **_this_month()
+    )
+
+    # 100 charged - 30 refunded = 70; the 80 payment is excluded entirely.
+    assert [(r["name"], r["total"]) for r in rows] == [(test_categories[0].name, 70.0)]
+
+
+async def test_unpaid_by_category_reconciles_with_the_summary(
+    session, test_user, test_workspace, card, test_categories
+):
+    """The breakdown and the statement's unpaid_total sit side by side, so
+    they must agree — they share `_cycle_scope` to guarantee it."""
+    today = date.today()
+    await _charge(session, test_user, test_workspace, card, amount="30.00",
+                  tx_date=today, category=test_categories[0])
+    await _charge(session, test_user, test_workspace, card, amount="12.50",
+                  tx_date=today, category=test_categories[1])
+    await _charge(session, test_user, test_workspace, card, amount="99.00",
+                  tx_date=date(2026, 1, 5), category=test_categories[0])
+
+    window = dict(date_from=today.replace(day=1), date_to=today)
+    rows = await get_unpaid_by_category(session, card.id, test_workspace.id, **window)
+    summary = await get_account_summary(session, card.id, test_workspace.id, **window)
+
+    assert sum(r["total"] for r in rows) == pytest.approx(summary["unpaid_total"])
 
 
 async def test_unpaid_by_category_nets_refunds(
@@ -687,7 +903,7 @@ async def test_unpaid_by_category_nets_refunds(
     await _charge(session, test_user, test_workspace, card, amount="20.00",
                   tx_type="credit", category=food)
 
-    rows = await get_unpaid_by_category(session, card.id, test_workspace.id)
+    rows = await get_unpaid_by_category(session, card.id, test_workspace.id, **_this_month())
 
     assert [r["total"] for r in rows] == [30.0]
 
@@ -698,7 +914,9 @@ async def test_unpaid_by_category_is_empty_for_non_card_accounts(
     await _charge(session, test_user, test_workspace, checking,
                   amount="30.00", category=test_categories[0])
 
-    assert await get_unpaid_by_category(session, checking.id, test_workspace.id) == []
+    assert await get_unpaid_by_category(
+        session, checking.id, test_workspace.id, **_this_month()
+    ) == []
 
 
 async def test_api_unpaid_by_category(
