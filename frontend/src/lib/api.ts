@@ -414,10 +414,16 @@ export const accounts = {
     const { data } = await api.get(`/accounts/${id}/balance-history`, { params: { from, to } })
     return data
   },
-  // Not date-scoped on purpose: this answers "what do I still owe", so unpaid
-  // charges from older statements have to keep counting.
-  unpaidByCategory: async (id: string): Promise<UnpaidCategory[]> => {
-    const { data } = await api.get(`/accounts/${id}/unpaid-by-category`)
+  // Takes the same window as `summary` and shares its backend scoping, so the
+  // breakdown always reconciles with that statement's unpaid_total.
+  unpaidByCategory: async (id: string, from?: string, to?: string, billId?: string, unbilledOnly?: boolean, allStatements?: boolean): Promise<UnpaidCategory[]> => {
+    const { data } = await api.get(`/accounts/${id}/unpaid-by-category`, {
+      params: {
+        from, to, bill_id: billId,
+        unbilled_only: unbilledOnly || undefined,
+        all_statements: allStatements || undefined,
+      },
+    })
     return data
   },
   bills: async (id: string, limit = 24): Promise<CreditCardBill[]> => {

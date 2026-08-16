@@ -191,6 +191,14 @@ export interface AccountSummary {
   current_balance_primary: number | null
   monthly_income_primary: number | null
   monthly_expenses_primary: number | null
+  // Balance carried into the window, from transactions bucketed before it.
+  // Credit-positive, so a card's debt arrives negative.
+  opening_balance: number
+  opening_balance_primary: number | null
+  // Balance at the end of the window — a card's statement closing balance.
+  // Counts payments and transfers, unlike monthly_expenses.
+  closing_balance: number
+  closing_balance_primary: number | null
   // Statement paid/unpaid split, in the account's currency. Null for non-card
   // accounts; otherwise the two sum to monthly_expenses.
   paid_total: number | null

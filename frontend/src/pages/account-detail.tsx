@@ -126,32 +126,31 @@ function dueDateForCycle(cycleEnd: string, dueDay: number | null | undefined): s
   return format(bill, 'yyyy-MM-dd')
 }
 
-/** Build a "Maio 2026"-style label for a credit card cycle.
- * Brazilian convention: the bill is named after the month it's due, which is
- * the next occurrence of payment_due_day strictly after the cycle close. */
+/** Build a "Maio 2026"-style label for a credit card cycle, named after the
+ * month the statement covers.
+ *
+ * Upstream names a bill after the month it's *due* (Brazilian "fatura"
+ * convention). We deliberately diverge: with a cycle running 21 Aug - 20 Sep
+ * and payment due 5 Oct, a due-month label reads "Oct" above a list of August
+ * and September charges, which reads as a mismatch rather than a convention.
+ *
+ * The anchor is the cycle's last covered day, not its close date. The two only
+ * differ at a month boundary, and there the last covered day is the right one:
+ * a cycle of 1-30 Sep closes on 1 Oct but is unambiguously September.
+ *
+ * Pass `bill` when a provider bill anchors the cycle (its close is recoverable
+ * from due_date), otherwise pass the cycle's inclusive `end`. */
 function creditCardCycleLabel(
-  filterTo: string,
-  dueDay: number | null | undefined,
+  anchor: { bill?: CreditCardBill | null; cycleEnd?: string | null },
+  closeDay: number | null | undefined,
   i18nLanguage: string,
 ): string {
   const dateFnsLocale = resolveDateFnsLocale(i18nLanguage)
-  const to = parseISO(filterTo + 'T00:00:00')
-  if (!dueDay) {
-    return format(to, 'MMM yyyy', { locale: dateFnsLocale })
-  }
-  const y = to.getFullYear()
-  const m = to.getMonth()
-  const clamp = (yy: number, mm: number) => Math.min(dueDay, daysInMonth(yy, mm))
-  const sameMonth = new Date(y, m, clamp(y, m))
-  let bill: Date
-  if (sameMonth > to) {
-    bill = sameMonth
-  } else {
-    const ny = m === 11 ? y + 1 : y
-    const nm = m === 11 ? 0 : m + 1
-    bill = new Date(ny, nm, clamp(ny, nm))
-  }
-  return format(bill, 'MMM yyyy', { locale: dateFnsLocale })
+  const lastCoveredDay = anchor.bill
+    ? format(addDays(parseISO(closeDateForBill(anchor.bill.due_date, closeDay) + 'T00:00:00'), -1), 'yyyy-MM-dd')
+    : anchor.cycleEnd
+  if (!lastCoveredDay) return ''
+  return format(parseISO(lastCoveredDay + 'T00:00:00'), 'MMM yyyy', { locale: dateFnsLocale })
 }
 
 /** Return the [start, end] dates of the billing cycle that CONTAINS `reference`.
@@ -590,12 +589,27 @@ export default function AccountDetailPage() {
   // the rows already loaded for this cycle, so it settles exactly what the
   // user is looking at rather than the card's whole history.
   const [markPaidOpen, setMarkPaidOpen] = useState(false)
-  // Outstanding balance grouped by category, across *all* statements — so it
-  // normally exceeds the on-screen statement's unpaid figure. Answers "which
-  // budget do I move funds from".
+  // Outstanding balance grouped by category for the statement on screen.
+  // Mirrors the `summary` query's window exactly — same params, same backend
+  // scoping — so this breakdown reconciles with that statement's unpaid_total.
+  // Scoped to the statement on screen by default; the panel's own toggle
+  // widens it to everything still owed. Deliberately does not drive the
+  // Unpaid figure in the totals card, which stays statement-scoped.
+  const [unpaidAllStatements, setUnpaidAllStatements] = useState(false)
   const { data: unpaidByCategory } = useQuery({
-    queryKey: ['accounts', id, 'unpaid-by-category'],
-    queryFn: () => accounts.unpaidByCategory(id!),
+    queryKey: unpaidAllStatements
+      ? ['accounts', id, 'unpaid-by-category', 'all']
+      : activeBill
+        ? ['accounts', id, 'unpaid-by-category', { bill_id: activeBill.id, from: filterFrom, to: filterTo }]
+        : ['accounts', id, 'unpaid-by-category', filterFrom, filterTo, { unbilled_only: isInProgressCycle }],
+    queryFn: () => accounts.unpaidByCategory(
+      id!,
+      filterFrom || undefined,
+      filterTo || undefined,
+      activeBill?.id,
+      isInProgressCycle || undefined,
+      unpaidAllStatements || undefined,
+    ),
     enabled: !!id && account?.type === 'credit_card',
   })
   // Charges only: credits are the payments themselves, and the opening balance
@@ -717,17 +731,31 @@ export default function AccountDetailPage() {
     if (!txData?.items) return []
 
     if (isCreditCard) {
-      // Cycle running total: debits add, refund credits subtract (net
-      // matches the bank's bill total). Excludes opening_balance and any
-      // transfer-paired tx (bill payments — those zero out separately).
-      // Computed oldest → newest, then reversed (not re-sorted) so
-      // same-day rows read monotonically top-down.
+      // Outstanding balance owed at each point, shown debt-positive to match
+      // the column's red-when-positive colouring.
+      //
+      // Anchored on the window's opening balance so it carries forward what
+      // was still owed from earlier statements rather than restarting at zero
+      // each cycle. Payments move it: they are transfer-paired rows, which the
+      // previous cycle-spend accumulator deliberately skipped — which is why a
+      // payment appeared to do nothing to a column headed "balance".
+      //
+      // Computed oldest → newest, then reversed (not re-sorted) so same-day
+      // rows read monotonically top-down.
+      if (summary === undefined) return []
+      const opening = usePrimary
+        ? (summary.opening_balance_primary ?? summary.opening_balance)
+        : summary.opening_balance
       const ascending = [...txData.items].sort(
         (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
       )
-      let running = 0
+      // Balance convention is credit-positive, so a card's debt arrives
+      // negative; flip it once here and work in debt terms below.
+      let running = -opening
       const withBalance = ascending.map((tx) => {
-        if (tx.source !== 'opening_balance' && !tx.transfer_pair_id) {
+        // Ignored rows are excluded from every other balance figure, so
+        // including them here would make this column disagree with them.
+        if (!tx.is_ignored) {
           const amt = usePrimary && tx.amount_primary != null ? Number(tx.amount_primary) : Number(tx.amount)
           if (tx.type === 'debit') running += amt
           else if (tx.type === 'credit') running -= amt
@@ -901,11 +929,11 @@ export default function AccountDetailPage() {
                     type="button"
                     className="inline-flex items-center justify-center gap-2 min-w-[140px] border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground hover:bg-muted/50 transition-all cursor-pointer capitalize"
                   >
-                    {activeBill
-                      ? format(parseISO(activeBill.due_date + 'T00:00:00'), 'MMM yyyy', {
-                          locale: resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language),
-                        })
-                      : creditCardCycleLabel(filterTo, account?.payment_due_day, i18n.language)}
+                    {creditCardCycleLabel(
+                      { bill: activeBill, cycleEnd: filterTo },
+                      account?.statement_close_day,
+                      i18n.resolvedLanguage ?? i18n.language,
+                    )}
                   </button>
                 </PopoverTrigger>
                 <PopoverContent align="center" className="w-auto p-3 space-y-3">
@@ -1018,7 +1046,6 @@ export default function AccountDetailPage() {
 
       {/* Bill timeline (last 6 cycles) — only for CC with cycle metadata */}
       {isCreditCard && timelineCycles.length > 0 && (() => {
-        const dfLocale = resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language)
         const totals = timelineQueries.map((q, i) => {
           const c = timelineCycles[i]
           // Single source of truth: live debit sum from the summary endpoint,
@@ -1039,12 +1066,13 @@ export default function AccountDetailPage() {
               {totals.map((c, i) => {
                 const isCurrent = c.start === filterFrom && c.end === filterTo
                 const heightPct = c.total > 0 ? Math.max(8, (c.total / max) * 100) : 4
-                // When a bill anchors this cycle, label by the bill's actual
-                // month (handles dynamic close days). Otherwise fall back to
-                // the cycle-math label that maps close → due → month.
-                const label = c.bill
-                  ? format(parseISO(c.bill.due_date + 'T00:00:00'), 'MMM yyyy', { locale: dfLocale })
-                  : creditCardCycleLabel(c.end, account.payment_due_day, i18n.language)
+                // Same basis as the picker above it — otherwise the selector
+                // and the bar for the very same cycle disagree.
+                const label = creditCardCycleLabel(
+                  { bill: c.bill, cycleEnd: c.end },
+                  account.statement_close_day,
+                  i18n.language,
+                )
                 return (
                   <button
                     key={i}
@@ -1087,7 +1115,14 @@ export default function AccountDetailPage() {
         // can lag any charges added since the last sync). Otherwise use the
         // summary endpoint's monthly_expenses now nets refund credits against
         // debits for CC accounts (matches the bank's bill total).
-        const billTotal = (showPrimary ? summary?.monthly_expenses_primary : undefined) ?? summary?.monthly_expenses ?? 0
+        // Spend in the cycle — charges net of refunds, excluding payments
+        // (counts_as_pnl drops transfer-paired rows and transfer categories).
+        const newTransactions = (showPrimary ? summary?.monthly_expenses_primary : undefined) ?? summary?.monthly_expenses ?? 0
+        // What's owed once the cycle closes: the opening balance moved by
+        // everything in it, payments included. Balance convention is
+        // credit-positive, so flip it to show debt as a positive figure.
+        const closingRaw = (showPrimary ? summary?.closing_balance_primary : undefined) ?? summary?.closing_balance ?? 0
+        const billTotal = -closingRaw
         // "Default cycle" = the bill the user is here to pay (next due). The
         // AGORA tag on Limite disponível only shows when viewing a different cycle.
         const isDefaultCycle =
@@ -1135,16 +1170,16 @@ export default function AccountDetailPage() {
           ? Number(prevLabelBill.total_amount)
           : previousCycleSummary?.monthly_expenses ?? 0
         const showComparison = (prevLabelBill || previousCycle) && prevTotal > 0
-        const deltaPct = showComparison ? ((billTotal - prevTotal) / prevTotal) * 100 : null
-        const prevCycleLabel = prevLabelBill
-          ? format(parseISO(prevLabelBill.due_date + 'T00:00:00'), 'MMM yyyy', {
-              locale: resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language),
-            })
-          : previousCycle
-            ? creditCardCycleLabel(previousCycle.end, account.payment_due_day, i18n.language)
-            : null
+        const deltaPct = showComparison ? ((newTransactions - prevTotal) / prevTotal) * 100 : null
+        const prevCycleLabel = (prevLabelBill || previousCycle)
+          ? creditCardCycleLabel(
+              { bill: prevLabelBill, cycleEnd: previousCycle?.end },
+              account.statement_close_day,
+              i18n.resolvedLanguage ?? i18n.language,
+            )
+          : null
         return (
-          <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 mb-6">
             <div className="bg-card rounded-xl border border-border shadow-sm p-3 sm:p-4 overflow-hidden">
               <p className="text-[10px] sm:text-xs font-medium text-muted-foreground mb-1 truncate">
                 {t('accounts.cycleBillTotal')}
@@ -1152,17 +1187,25 @@ export default function AccountDetailPage() {
               <p className="text-[length:clamp(0.7rem,3.5vw,1.25rem)] sm:text-2xl font-bold tabular-nums text-foreground">
                 {mask(formatCurrency(billTotal, displayCurrency, locale))}
               </p>
-              {deltaPct != null && prevCycleLabel && (
-                <p className={`text-[10px] sm:text-xs font-medium mt-0.5 tabular-nums ${deltaPct > 0 ? 'text-rose-500' : 'text-emerald-600'}`}>
-                  {deltaPct > 0 ? '+' : ''}{deltaPct.toFixed(0)}% <span className="text-muted-foreground font-normal">vs {prevCycleLabel}</span>
-                </p>
-              )}
               {summary?.unpaid_total != null && (
                 <p className="text-[10px] sm:text-xs font-medium mt-0.5 tabular-nums text-muted-foreground truncate">
                   {t('accounts.cycleUnpaid')}:{' '}
                   <span className={summary.unpaid_total > 0 ? 'text-foreground' : 'text-emerald-600'}>
                     {mask(formatCurrency(summary.unpaid_total, displayCurrency, locale))}
                   </span>
+                </p>
+              )}
+            </div>
+            <div className="bg-card rounded-xl border border-border shadow-sm p-3 sm:p-4 overflow-hidden">
+              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground mb-1 truncate">
+                {t('accounts.cycleNewTransactions')}
+              </p>
+              <p className="text-[length:clamp(0.7rem,3.5vw,1.25rem)] sm:text-2xl font-bold tabular-nums text-foreground">
+                {mask(formatCurrency(newTransactions, displayCurrency, locale))}
+              </p>
+              {deltaPct != null && prevCycleLabel && (
+                <p className={`text-[10px] sm:text-xs font-medium mt-0.5 tabular-nums ${deltaPct > 0 ? 'text-rose-500' : 'text-emerald-600'}`}>
+                  {deltaPct > 0 ? '+' : ''}{deltaPct.toFixed(0)}% <span className="text-muted-foreground font-normal">vs {prevCycleLabel}</span>
                 </p>
               )}
             </div>
@@ -1331,18 +1374,42 @@ export default function AccountDetailPage() {
         const total = unpaidByCategory.reduce((sum, row) => sum + row.total, 0)
         return (
           <div className="bg-card rounded-xl border border-border shadow-sm p-4 sm:p-5 mb-6">
-            <div className="flex items-baseline justify-between gap-3 mb-3">
+            <div className="flex items-start justify-between gap-3 mb-3">
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-foreground">
                   {t('accounts.unpaidByCategory')}
                 </h3>
                 <p className="text-[11px] text-muted-foreground">
-                  {t('accounts.unpaidByCategoryHint')}
+                  {t(unpaidAllStatements
+                    ? 'accounts.unpaidByCategoryHintAll'
+                    : 'accounts.unpaidByCategoryHint')}
                 </p>
               </div>
-              <p className="shrink-0 text-base sm:text-lg font-bold tabular-nums text-foreground">
-                {mask(formatCurrency(total, account.currency, locale))}
-              </p>
+              <div className="shrink-0 flex flex-col items-end gap-1.5">
+                <p className="text-base sm:text-lg font-bold tabular-nums text-foreground">
+                  {mask(formatCurrency(total, account.currency, locale))}
+                </p>
+                <div className="inline-flex overflow-hidden rounded-md border border-border text-[11px]">
+                  {[
+                    { all: false, label: t('accounts.unpaidScopeStatement') },
+                    { all: true, label: t('accounts.unpaidScopeAll') },
+                  ].map(opt => (
+                    <button
+                      key={String(opt.all)}
+                      type="button"
+                      onClick={() => setUnpaidAllStatements(opt.all)}
+                      aria-pressed={unpaidAllStatements === opt.all}
+                      className={`px-2 py-1 transition-colors ${
+                        unpaidAllStatements === opt.all
+                          ? 'bg-primary/10 text-foreground font-medium'
+                          : 'text-muted-foreground hover:bg-muted/60'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
             <ul className="space-y-1.5">
               {unpaidByCategory.map((row) => {
