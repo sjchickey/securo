@@ -465,6 +465,7 @@ function TransactionForm({
   // Manual CC bucketing override (issue #92). Empty = auto. Visible only
   // when the selected account is a credit card.
   const [effectiveBillDate, setEffectiveBillDate] = useState(seed?.effective_bill_date ?? '')
+  const [cardMember, setCardMember] = useState(seed?.card_member ?? '')
   const [convertedAmount, setConvertedAmount] = useState(
     seed?.amount_primary != null ? seed.amount_primary.toString() : ''
   )
@@ -543,6 +544,12 @@ function TransactionForm({
   const [coveringPaymentId, setCoveringPaymentId] = useState(seed?.covered_by_payment_id ?? '')
   const [togglingPaid, setTogglingPaid] = useState(false)
   const [addToRuleOpen, setAddToRuleOpen] = useState(false)
+
+  const { data: knownCardMembers } = useQuery({
+    queryKey: ['card-members'],
+    queryFn: () => transactionsApi.cardMembers(),
+    staleTime: 5 * 60 * 1000,
+  })
 
   const { data: rulesList, isLoading: rulesLoading } = useQuery({
     queryKey: ['rules'],
@@ -815,7 +822,7 @@ function TransactionForm({
         const selectedAcc = accounts.find(a => a.id === accountId)
         const isCcSelected = selectedAcc?.type === 'credit_card'
         const overridePayload: Partial<Transaction> = isCcSelected
-          ? { effective_bill_date: effectiveBillDate || null }
+          ? { effective_bill_date: effectiveBillDate || null, card_member: cardMember || null }
           : {}
         // Splits ride along on the same payload — the backend treats a
         // missing `splits` field as untouched and a present payload as
@@ -1299,6 +1306,32 @@ function TransactionForm({
                 </button>
               )}
             </div>
+          </div>
+        )
+      })()}
+
+      {/* Cardholder. Imports fill this in (Amex reports it in CSV and inside
+          the OFX/QFX memo), but manual charges have no import to inherit it
+          from, so it stays editable. A datalist rather than a select: the
+          list comes from what's been imported, and a new holder shouldn't be
+          unenterable just because nothing has been imported for them yet. */}
+      {(() => {
+        const selectedAcc = accounts.find(a => a.id === accountId)
+        if (selectedAcc?.type !== 'credit_card' && !cardMember) return null
+        return (
+          <div className="space-y-2">
+            <Label htmlFor="tx-card-member">{t('transactions.colCardMember')}</Label>
+            <input
+              id="tx-card-member"
+              list="tx-card-member-options"
+              value={cardMember}
+              onChange={(e) => setCardMember(e.target.value)}
+              placeholder={t('transactions.cardMemberPlaceholder')}
+              className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus-visible:ring-[2px] focus-visible:ring-ring/30"
+            />
+            <datalist id="tx-card-member-options">
+              {(knownCardMembers ?? []).map(m => <option key={m} value={m}>{m}</option>)}
+            </datalist>
           </div>
         )
       })()}

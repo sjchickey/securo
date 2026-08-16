@@ -452,6 +452,7 @@ export const transactions = {
     type?: string
     status?: string
     is_paid?: boolean
+    card_member?: string
     from?: string
     to?: string
     bill_id?: string
@@ -593,6 +594,13 @@ export const transactions = {
   bulkMarkUnpaid: async (transactionIds: string[]): Promise<BulkPaidResult> => {
     const { data } = await api.patch('/transactions/bulk-mark-unpaid', {
       transaction_ids: transactionIds,
+    })
+    return data
+  },
+  // Distinct cardholders seen in the workspace, for the filter dropdown.
+  cardMembers: async (accountId?: string): Promise<string[]> => {
+    const { data } = await api.get('/transactions/card-members', {
+      params: { account_id: accountId },
     })
     return data
   },

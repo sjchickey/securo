@@ -366,6 +366,8 @@
     "colType": "Tipo",
     "colStatus": "Stato",
     "colPaid": "Pagato",
+    "colCardMember": "Intestatario",
+    "cardMemberPlaceholder": "Chi ha effettuato questa spesa",
     "typeExpense": "Spesa",
     "typeIncome": "Entrata",
     "statusPending": "In sospeso",

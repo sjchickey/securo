@@ -366,6 +366,8 @@
     "colType": "Тип",
     "colStatus": "Статус",
     "colPaid": "Оплачено",
+    "colCardMember": "Держатель карты",
+    "cardMemberPlaceholder": "Кто совершил операцию",
     "typeExpense": "Расход",
     "typeIncome": "Приход",
     "statusPending": "Ожидается",

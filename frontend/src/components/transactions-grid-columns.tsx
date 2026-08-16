@@ -16,6 +16,7 @@ export type ColumnId =
   | 'type'
   | 'status'
   | 'paid'
+  | 'cardMember'
 
 export type SortDir = 'asc' | 'desc'
 
@@ -44,6 +45,7 @@ export const COLUMN_REGISTRY: ColumnDef[] = [
   { id: 'type',        labelKey: 'transactions.colType',        defaultVisible: false, sortable: true,  defaultWidth: 100, align: 'left' },
   { id: 'status',      labelKey: 'transactions.colStatus',      defaultVisible: false, sortable: true,  defaultWidth: 100, align: 'left' },
   { id: 'paid',        labelKey: 'transactions.colPaid',        defaultVisible: false, sortable: true,  defaultWidth: 80,  align: 'center' },
+  { id: 'cardMember',  labelKey: 'transactions.colCardMember',  defaultVisible: false, sortable: true,  defaultWidth: 150, align: 'left' },
   { id: 'amount',      labelKey: 'transactions.colAmount',      alwaysOn: true, defaultVisible: true, sortable: true, defaultWidth: 160, align: 'right' },
 ]
 

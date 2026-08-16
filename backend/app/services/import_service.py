@@ -135,6 +135,29 @@ def _is_balance_summary_row(description: str | None) -> bool:
     return any(normalized.startswith(prefix) for prefix in _OFX_BALANCE_ROW_DESCRIPTIONS)
 
 
+# Amex writes the cardholder into the OFX/QFX MEMO as "MR SEAN HICKEY-41006"
+# — a title, a name in caps, then the card's last digits. Deliberately strict:
+# a memo has to be *only* that shape to be treated as a cardholder, because
+# for most banks the memo is the merchant and misreading it would blank out
+# every description in the file.
+_CARD_MEMBER_MEMO = re.compile(
+    r"^\s*((?:MR|MRS|MS|MISS|DR|PROF)\.?\s+)?([A-Z][A-Z.'\- ]{2,60}?)\s*-\s*\d{3,6}\s*$"
+)
+
+
+def _extract_card_member(memo: str | None) -> str | None:
+    """Return the cardholder named in an OFX memo, or None if it isn't one."""
+    if not memo:
+        return None
+    match = _CARD_MEMBER_MEMO.match(memo)
+    if not match:
+        return None
+    title, name = match.group(1), match.group(2)
+    # Keep the title — it's how the issuer distinguishes two holders sharing a
+    # surname — but drop the card digits, which aren't useful on screen.
+    return f"{(title or '').strip()} {name.strip()}".strip()
+
+
 def parse_ofx(content: bytes) -> list[TransactionImport]:
     """Parse OFX file content and return transactions."""
     content = _preprocess_ofx(content)
@@ -144,7 +167,15 @@ def parse_ofx(content: bytes) -> list[TransactionImport]:
     for account in ofx.accounts:
         for txn in account.statement.transactions:
             raw_payee = getattr(txn, 'payee', None) or None
-            description = txn.memo or txn.payee or "Unknown"
+            card_member = _extract_card_member(txn.memo)
+            # The memo normally *is* the description, so it wins. But when it
+            # holds nothing but a cardholder the merchant lives in the payee,
+            # and using the memo would name every row after the person who
+            # spent rather than what they spent it on.
+            if card_member and raw_payee:
+                description = raw_payee
+            else:
+                description = txn.memo or txn.payee or "Unknown"
             if _is_balance_summary_row(description):
                 continue
             external_id = getattr(txn, 'id', None)
@@ -160,6 +191,7 @@ def parse_ofx(content: bytes) -> list[TransactionImport]:
                 type="credit" if txn.amount > 0 else "debit",
                 external_id=external_id,
                 payee_raw=raw_payee,
+                card_member=card_member,
             ))
 
     return transactions
@@ -380,7 +412,7 @@ DATE_FORMAT_MAP = {
 CSV_MAPPABLE_FIELDS = (
     'date', 'description', 'amount', 'type',
     'category', 'currency', 'fx_rate', 'inflow', 'outflow',
-    'payee', 'external_id', 'notes',
+    'payee', 'external_id', 'notes', 'card_member',
 )
 
 
@@ -443,6 +475,8 @@ def parse_csv(
     payee_cols = ['payee', 'merchant', 'beneficiary', 'beneficiario', 'pagador']
     external_id_cols = [] # External ID must be mapped explicitly
     notes_cols = ['notes', 'nota', 'observacao']
+    # Amex CSV calls it "Card Member"; other issuers vary.
+    card_member_cols = ['card member', 'cardmember', 'card_member', 'cardholder', 'card holder', 'titular']
 
     # Normalize the user-supplied column mapping (Securo field -> CSV header).
     mapping = {
@@ -496,6 +530,7 @@ def parse_csv(
     payee_col = resolve_col('payee', payee_cols)
     external_id_col = resolve_col('external_id', external_id_cols)
     notes_col = resolve_col('notes', notes_cols)
+    card_member_col = resolve_col('card_member', card_member_cols)
 
     if not date_col or not desc_col:
         raise ValueError(
@@ -588,6 +623,7 @@ def parse_csv(
         txn_payee = row[payee_col].strip() if payee_col and row.get(payee_col) else None
         txn_external_id = row[external_id_col].strip() if external_id_col and row.get(external_id_col) else None
         txn_notes = row[notes_col].strip() if notes_col and row.get(notes_col) else None
+        txn_card_member = row[card_member_col].strip() if card_member_col and row.get(card_member_col) else None
 
         transactions.append(TransactionImport(
             description=row[desc_col].strip(),
@@ -600,6 +636,7 @@ def parse_csv(
             payee_raw=txn_payee,
             external_id=txn_external_id,
             notes=txn_notes,
+            card_member=txn_card_member,
         ))
 
     return transactions
@@ -800,6 +837,7 @@ async def import_transactions(
             payee_id=import_payee_id,
             category_id=category_id,
             notes=getattr(txn_data, "notes", None),
+            card_member=getattr(txn_data, "card_member", None),
             recurring_transaction_id=recurring_link.id if recurring_link else None,
         )
         apply_effective_date(transaction, account)

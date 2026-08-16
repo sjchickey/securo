@@ -254,6 +254,8 @@ export interface Transaction {
   parent_owner_name?: string | null
   // Flag to exclude this transaction from reports and dashboard aggregations
   is_ignored: boolean
+  // Which cardholder made this, on cards with supplementary holders.
+  card_member: string | null
   // Payment tracking: whether this transaction has been marked as paid
   is_paid: boolean
   // When this transaction was marked as paid (ISO datetime string)

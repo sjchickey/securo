@@ -366,6 +366,8 @@
     "colType": "Тип",
     "colStatus": "Статус",
     "colPaid": "Оплачено",
+    "colCardMember": "Власник картки",
+    "cardMemberPlaceholder": "Хто здійснив операцію",
     "typeExpense": "Витрата",
     "typeIncome": "Надходження",
     "statusPending": "Очікується",

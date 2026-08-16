@@ -26,6 +26,7 @@ class TransactionBase(BaseModel):
 
 class TransactionCreate(TransactionBase):
     account_id: uuid.UUID
+    card_member: Optional[str] = None
     category_id: Optional[uuid.UUID] = None
     payee_id: Optional[uuid.UUID] = None
     currency: Optional[str] = None
@@ -108,6 +109,7 @@ class TransactionUpdate(BaseModel):
     # CC bucketing override (issue #92). Empty string / explicit null clears
     # it back to auto. Only meaningful for credit-card accounts.
     effective_bill_date: Optional[_Date] = None
+    card_member: Optional[str] = None
     # Payment tracking is deliberately absent here: it writes an FK
     # (covered_by_payment_id) that needs workspace + same-account validation,
     # and the generic patch path applies fields with a bare setattr. Use the
@@ -170,6 +172,7 @@ class TransactionRead(TransactionBase):
     bill_id: Optional[uuid.UUID] = None
     effective_bill_date: Optional[_Date] = None
     recurring_transaction_id: Optional[uuid.UUID] = None
+    card_member: Optional[str] = None
     # Payment tracking fields
     is_paid: bool = False
     paid_date: Optional[datetime] = None
@@ -289,6 +292,7 @@ class TransferRead(BaseModel):
 
 class TransactionImport(TransactionBase):
     """TransactionBase extended with import-only fields not exposed in read responses."""
+    card_member: Optional[str] = None
     category_name: Optional[str] = None
     suggested_category_id: Optional[uuid.UUID] = None
     suggested_category_name: Optional[str] = None

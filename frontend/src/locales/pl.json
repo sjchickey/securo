@@ -375,6 +375,8 @@
     "colType": "Typ",
     "colStatus": "Status",
     "colPaid": "Zapłacone",
+    "colCardMember": "Posiadacz karty",
+    "cardMemberPlaceholder": "Kto dokonał tej transakcji",
     "typeExpense": "Wydatek",
     "typeIncome": "Przychód",
     "statusPending": "Oczekująca",

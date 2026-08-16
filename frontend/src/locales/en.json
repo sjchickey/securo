@@ -366,6 +366,8 @@
     "colType": "Type",
     "colStatus": "Status",
     "colPaid": "Paid",
+    "colCardMember": "Cardholder",
+    "cardMemberPlaceholder": "Who made this charge",
     "typeExpense": "Expense",
     "typeIncome": "Income",
     "statusPending": "Pending",

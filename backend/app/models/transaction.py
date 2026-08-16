@@ -118,6 +118,9 @@ class Transaction(Base):
         nullable=True,
         index=True,
     )
+    # Which cardholder made this — cards with supplementary holders report it.
+    # Amex puts it in a CSV "Card Member" column and inside the OFX/QFX MEMO.
+    card_member: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     account: Mapped["Account"] = relationship(back_populates="transactions")

@@ -100,9 +100,10 @@ async def list_transactions(
     user_pnl_only: bool = Query(False, description="Return only rows that count toward dashboard/user income/expense totals"),
     tags: Optional[List[str]] = Query(None),
     is_paid: Optional[bool] = Query(None, description="Filter to paid or unpaid transactions"),
+    card_member: Optional[str] = Query(None, description="Filter to one cardholder (supplementary cards)"),
     min_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount >= this value (primary currency)."),
     max_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount <= this value (primary currency)."),
-    sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status|paid). Default: date desc."),
+    sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status|paid|card_member). Default: date desc."),
     sort_dir: str = Query("desc", regex="^(asc|desc)$"),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
@@ -118,6 +119,7 @@ async def list_transactions(
         user_pnl_only=user_pnl_only,
         status=status,
         is_paid=is_paid,
+        card_member=card_member,
         accounting_mode=accounting_mode,
         tags=tags,
         bill_id=bill_id,
@@ -170,6 +172,7 @@ async def export_transactions(
     type: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     is_paid: Optional[bool] = Query(None, description="Filter to paid or unpaid transactions (credit cards)."),
+    card_member: Optional[str] = Query(None, description="Filter to one cardholder."),
     tags: Optional[List[str]] = Query(None),
     transaction_ids: Optional[List[uuid.UUID]] = Query(None, description="If set, exports exactly these rows (scoped to the workspace); other filters are ignored."),
     ctx: WorkspaceContext = Depends(current_workspace),
@@ -192,7 +195,7 @@ async def export_transactions(
             category_ids=_merge_id_filters(category_id, category_ids),
             payee_id=payee_id, from_date=from_date, to_date=to_date,
             search=q, uncategorized=uncategorized, txn_type=type, status=status,
-            is_paid=is_paid, skip_pagination=True,
+            is_paid=is_paid, card_member=card_member, skip_pagination=True,
             accounting_mode=accounting_mode,
             tags=tags,
         )
@@ -200,7 +203,7 @@ async def export_transactions(
     output = io.StringIO()
     output.write("﻿")  # UTF-8 BOM for Excel
     writer = csv.writer(output)
-    writer.writerow(["date", "description", "amount", "type", "currency", "category", "account", "payee", "payee_name", "notes", "status", "is_paid", "paid_date", "source", "amount_primary", "fx_rate_used"])
+    writer.writerow(["date", "description", "amount", "type", "currency", "category", "account", "payee", "payee_name", "notes", "status", "is_paid", "paid_date", "card_member", "source", "amount_primary", "fx_rate_used"])
     for tx in transactions:
         writer.writerow([
             tx.date.isoformat(),
@@ -216,6 +219,7 @@ async def export_transactions(
             tx.status,
             "true" if tx.is_paid else "false",
             tx.paid_date.isoformat() if tx.paid_date else "",
+            tx.card_member or "",
             tx.source,
             str(tx.amount_primary) if tx.amount_primary is not None else "",
             str(tx.fx_rate_used) if tx.fx_rate_used is not None else "",
@@ -228,6 +232,16 @@ async def export_transactions(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="transactions-{today}.csv"'},
     )
+
+
+@router.get("/card-members", response_model=list[str])
+async def list_card_members(
+    account_id: Optional[uuid.UUID] = Query(None),
+    ctx: WorkspaceContext = Depends(current_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Distinct cardholders, for the transactions filter."""
+    return await transaction_service.get_card_members(session, ctx.workspace.id, account_id)
 
 
 @router.patch("/bulk-categorize")

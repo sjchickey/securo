@@ -366,6 +366,8 @@
     "colType": "Tipo",
     "colStatus": "Estado",
     "colPaid": "Pagado",
+    "colCardMember": "Titular",
+    "cardMemberPlaceholder": "Quién hizo este cargo",
     "typeExpense": "Gasto",
     "typeIncome": "Ingreso",
     "statusPending": "Pendiente",

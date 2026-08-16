@@ -7,6 +7,7 @@ import {
   ArrowUpDown,
   Banknote,
   Calendar as CalendarIcon,
+  CreditCard,
   Check,
   ChevronRight,
   Coins,
@@ -74,6 +75,10 @@ interface TransactionsFilterBarProps {
   onIsPaidChange: (value: string) => void
   /** Hides the payment filter when no credit-card account is in scope. */
   showPaidFilter: boolean
+  filterCardMember: string
+  onCardMemberChange: (value: string) => void
+  /** Empty when no card reports a cardholder; the filter then hides. */
+  cardMembers: string[]
   filterFrom: string
   filterTo: string
   onDateRangeChange: (from: string, to: string) => void
@@ -114,6 +119,9 @@ export function TransactionsFilterBar({
   filterIsPaid,
   onIsPaidChange,
   showPaidFilter,
+  filterCardMember,
+  onCardMemberChange,
+  cardMembers,
   filterFrom,
   filterTo,
   onDateRangeChange,
@@ -206,6 +214,7 @@ export function TransactionsFilterBar({
     !!filterType ||
     !!filterStatus ||
     !!filterIsPaid ||
+    !!filterCardMember ||
     !!filterFrom ||
     !!filterTo ||
     !!filterMinAmount ||
@@ -232,6 +241,8 @@ export function TransactionsFilterBar({
       : filterIsPaid === 'false'
         ? t('transactions.paidNo')
         : ''
+
+  const cardMemberLabel = filterCardMember || ''
 
   const dateLabel = useMemo(() => {
     if (!filterFrom && !filterTo) return null
@@ -443,6 +454,7 @@ export function TransactionsFilterBar({
                   type: typeLabel,
                   status: statusLabel,
                   isPaid: paidLabel,
+                  cardMember: cardMemberLabel,
                   date: dateLabel,
                   amount: amountLabel,
                 }}
@@ -459,6 +471,9 @@ export function TransactionsFilterBar({
                 isPaid={filterIsPaid}
                 onIsPaidChange={onIsPaidChange}
                 showPaidFilter={showPaidFilter}
+                cardMember={filterCardMember}
+                onCardMemberChange={onCardMemberChange}
+                cardMembers={cardMembers}
                 onDateRangeChange={onDateRangeChange}
                 onAmountRangeChange={onAmountRangeChange}
                 onApplyAmountRange={applyAmountRange}
@@ -860,6 +875,42 @@ export function TransactionsFilterBar({
                   </DropdownMenuSub>
                 )}
 
+                {/* Cardholder submenu — supplementary cards only */}
+                {cardMembers.length > 0 && (
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="gap-2 text-[13px]">
+                      <CreditCard size={14} className="text-muted-foreground" />
+                      <span className="flex-1">{t('transactions.colCardMember')}</span>
+                      {cardMemberLabel && (
+                        <span className="max-w-[90px] truncate text-[11px] text-muted-foreground">
+                          {cardMemberLabel}
+                        </span>
+                      )}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuPortal>
+                      <DropdownMenuSubContent sideOffset={8} className="w-[220px] p-1">
+                        {[{ value: '', label: t('transactions.all') },
+                          ...cardMembers.map(m => ({ value: m, label: m }))].map((opt) => (
+                          <DropdownMenuItem
+                            key={opt.value || 'all'}
+                            onSelect={() => onCardMemberChange(opt.value)}
+                            className={cn(
+                              'gap-2 rounded-sm px-2 py-1.5 text-[13px]',
+                              filterCardMember === opt.value && 'bg-primary/5',
+                            )}
+                          >
+                            <span className="size-2.5 shrink-0" />
+                            <span className="min-w-0 flex-1 truncate text-left">{opt.label}</span>
+                            {filterCardMember === opt.value && (
+                              <Check size={13} className="text-primary" />
+                            )}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuPortal>
+                  </DropdownMenuSub>
+                )}
+
                 {/* Date range submenu with presets */}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger className="gap-2 text-[13px]">
@@ -1129,6 +1180,14 @@ export function TransactionsFilterBar({
                 label={t('transactions.filterPaid')}
                 value={paidLabel}
                 onRemove={() => onIsPaidChange('')}
+              />
+            )}
+            {cardMemberLabel && (
+              <FilterChip
+                icon={<CreditCard size={12} />}
+                label={t('transactions.colCardMember')}
+                value={cardMemberLabel}
+                onRemove={() => onCardMemberChange('')}
               />
             )}
             {dateLabel && (

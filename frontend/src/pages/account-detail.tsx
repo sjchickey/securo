@@ -665,6 +665,14 @@ export default function AccountDetailPage() {
   // breakdown endpoint doesn't carry — fetch them under the same window the
   // panel is currently showing so the two agree about what "unpaid" covers.
   const MARK_CATEGORY_LIMIT = 500
+  const { data: accountCardMembers } = useQuery({
+    queryKey: ['card-members', id],
+    queryFn: () => transactions.cardMembers(id!),
+    enabled: !!id,
+    staleTime: 5 * 60 * 1000,
+  })
+  const showCardMember = (accountCardMembers?.length ?? 0) > 0
+
   const [markingCategory, setMarkingCategory] = useState<string | null>(null)
   const markCategoryPaid = async (row: UnpaidCategory) => {
     const key = row.category_id ?? 'uncategorized'
@@ -1800,6 +1808,9 @@ export default function AccountDetailPage() {
                     <th className="px-2 sm:px-4 py-3 text-left font-medium whitespace-nowrap">{t('transactions.date')}</th>
                     <th className="px-2 sm:px-4 py-3 text-left font-medium">{t('transactions.description')}</th>
                     <th className="px-2 sm:px-4 py-3 text-left font-medium hidden md:table-cell">{t('transactions.category')}</th>
+                    {showCardMember && (
+                      <th className="px-2 sm:px-4 py-3 text-left font-medium hidden lg:table-cell whitespace-nowrap">{t('transactions.colCardMember')}</th>
+                    )}
                     <th className="px-2 sm:px-4 py-3 text-right font-medium whitespace-nowrap">{t('transactions.amount')}</th>
                     <th className="px-2 sm:px-4 py-3 text-right font-medium hidden sm:table-cell whitespace-nowrap">{t('accounts.runningBalance')}</th>
                   </tr>
@@ -1932,6 +1943,13 @@ export default function AccountDetailPage() {
                             <span className="text-muted-foreground">—</span>
                           )}
                         </td>
+                        {showCardMember && (
+                          <td className="px-2 sm:px-4 py-3 hidden lg:table-cell text-sm text-muted-foreground">
+                            <span className="block max-w-[160px] truncate" title={tx.card_member ?? undefined}>
+                              {tx.card_member || '—'}
+                            </span>
+                          </td>
+                        )}
                         <td className={`px-2 sm:px-4 py-3 text-right text-xs sm:text-sm font-semibold tabular-nums whitespace-nowrap ${tx.is_ignored ? 'text-gray-500' : tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
                           <span className="transaction-amount">
                             {mask(`${tx.is_ignored ? ' ' : tx.type === 'credit' ? '+' : '-'}${formatCurrency(Math.abs(Number(tx.amount)), tx.currency, locale)}`)}

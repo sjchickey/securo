@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import {
   ArrowUpDown,
   Banknote,
+  CreditCard,
   Calendar as CalendarIcon,
   Check,
   ChevronLeft,
@@ -36,6 +37,7 @@ export type MobileFilterView =
   | 'type'
   | 'status'
   | 'isPaid'
+  | 'cardMember'
   | 'date'
   | 'amount'
 
@@ -65,6 +67,9 @@ interface MobileTransactionsFilterMenuProps {
   isPaid: string
   /** Payment tracking is credit-card only, so the row hides without one. */
   showPaidFilter: boolean
+  cardMember: string
+  /** Empty when no card reports a cardholder; the row then hides. */
+  cardMembers: string[]
   from: string
   to: string
   minAmount: string
@@ -84,6 +89,7 @@ interface MobileTransactionsFilterMenuProps {
   onTypeChange: (value: string) => void
   onStatusChange: (value: string) => void
   onIsPaidChange: (value: string) => void
+  onCardMemberChange: (value: string) => void
   onDateRangeChange: (from: string, to: string) => void
   onAmountRangeChange: (min: string, max: string) => void
   onApplyAmountRange: () => void
@@ -437,6 +443,7 @@ function buildRootOptions(
   labels: Record<Exclude<MobileFilterView, 'root'>, string>,
   summaries: MobileTransactionsFilterMenuProps['summaries'],
   showPaidFilter: boolean,
+  cardMembers: string[],
 ): RootOption[] {
   return [
     { view: 'account', icon: Wallet, label: labels.account, summary: summaries.account },
@@ -447,6 +454,9 @@ function buildRootOptions(
     { view: 'status', icon: ListChecks, label: labels.status, summary: summaries.status },
     ...(showPaidFilter
       ? [{ view: 'isPaid' as const, icon: Banknote, label: labels.isPaid, summary: summaries.isPaid }]
+      : []),
+    ...(cardMembers.length > 0
+      ? [{ view: 'cardMember' as const, icon: CreditCard, label: labels.cardMember, summary: summaries.cardMember }]
       : []),
     { view: 'date', icon: CalendarIcon, label: labels.date, summary: summaries.date },
     { view: 'amount', icon: Coins, label: labels.amount, summary: summaries.amount },
@@ -464,6 +474,7 @@ function buildLabels(
     type: t('transactions.type'),
     status: t('transactions.status'),
     isPaid: t('transactions.filterPaid'),
+    cardMember: t('transactions.colCardMember'),
     date: t('transactions.filtersBar.date'),
     amount: t('transactions.filtersBar.amount'),
   }
@@ -506,13 +517,17 @@ function MobileFilterDetail({
     ]
     return <MobileSelectionView options={options} selectedValue={menu.isPaid} onChange={menu.onIsPaidChange} />
   }
+  if (menu.view === 'cardMember') {
+    const options = [allOption, ...menu.cardMembers.map(m => ({ value: m, label: m }))]
+    return <MobileSelectionView options={options} selectedValue={menu.cardMember} onChange={menu.onCardMemberChange} />
+  }
   if (menu.view === 'date') {
     return <MobileDateView from={menu.from} to={menu.to} presets={menu.datePresets} onChange={menu.onDateRangeChange} onOpenCustomRange={menu.onOpenCustomRange} />
   }
   if (menu.view === 'amount') {
     return <MobileAmountView minAmount={menu.minAmount} maxAmount={menu.maxAmount} setMinAmount={menu.setMinAmount} setMaxAmount={menu.setMaxAmount} onReset={() => resetAmount(menu)} onApply={menu.onApplyAmountRange} />
   }
-  return <MobileFilterRoot options={buildRootOptions(labels, menu.summaries, menu.showPaidFilter)} hasAnyFilter={menu.hasAnyFilter} onSelect={(view) => openDetail(menu, view)} onClear={() => clearAll(menu)} />
+  return <MobileFilterRoot options={buildRootOptions(labels, menu.summaries, menu.showPaidFilter, menu.cardMembers)} hasAnyFilter={menu.hasAnyFilter} onSelect={(view) => openDetail(menu, view)} onClear={() => clearAll(menu)} />
 }
 
 function openDetail(

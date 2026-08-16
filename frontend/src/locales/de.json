@@ -366,6 +366,8 @@
     "colType": "Typ",
     "colStatus": "Status",
     "colPaid": "Bezahlt",
+    "colCardMember": "Karteninhaber",
+    "cardMemberPlaceholder": "Wer diese Buchung getätigt hat",
     "typeExpense": "Ausgabe",
     "typeIncome": "Einnahme",
     "statusPending": "Ausstehend",

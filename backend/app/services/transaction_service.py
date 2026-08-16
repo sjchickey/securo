@@ -123,6 +123,7 @@ async def get_transactions(
     account_types: Optional[list[str]] = None,
     status: Optional[str] = None,
     is_paid: Optional[bool] = None,
+    card_member: Optional[str] = None,
     include_summary: bool = False,
     user_pnl_only: bool = False,
 ) -> tuple[list[Transaction], int, Optional[dict]]:
@@ -265,6 +266,8 @@ async def get_transactions(
         base_query = base_query.where(Transaction.status == status)
     if is_paid is not None:
         base_query = base_query.where(Transaction.is_paid == is_paid)
+    if card_member:
+        base_query = base_query.where(Transaction.card_member == card_member)
     if currency:
         # Native-currency filter — match the column verbatim. Lets agents
         # answer "do I have any EUR transactions?" without text-searching
@@ -477,6 +480,10 @@ async def get_transactions(
         "status": Transaction.status,
         # `paid` matches the grid column id the UI sends; `is_paid` matches the
         # field name on the API payload, which is what agents reach for.
+        # `cardMember` is the grid column id the UI sends; `card_member`
+        # matches the API payload, which is what agents reach for.
+        "cardMember": Transaction.card_member,
+        "card_member": Transaction.card_member,
         "paid": Transaction.is_paid,
         "is_paid": Transaction.is_paid,
         "created_at": Transaction.created_at,
@@ -1592,6 +1599,26 @@ async def bulk_update_category(
     )
     await session.commit()
     return cast(CursorResult, result).rowcount
+
+
+async def get_card_members(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    account_id: Optional[uuid.UUID] = None,
+) -> list[str]:
+    """Distinct cardholders seen in this workspace, for the filter dropdown."""
+    query = (
+        select(Transaction.card_member)
+        .where(
+            Transaction.workspace_id == workspace_id,
+            Transaction.card_member.is_not(None),
+        )
+        .distinct()
+        .order_by(Transaction.card_member)
+    )
+    if account_id is not None:
+        query = query.where(Transaction.account_id == account_id)
+    return [row for row in (await session.execute(query)).scalars().all() if row]
 
 
 def _credit_card_account_ids():

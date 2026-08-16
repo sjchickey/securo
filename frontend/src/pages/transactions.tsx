@@ -154,6 +154,7 @@ export default function TransactionsPage() {
   // '' = any, 'true' = paid, 'false' = unpaid.
   const [filterIsPaid, setFilterIsPaid] = useState<string>(searchParams.get('is_paid') ?? '')
   const [markPaidOpen, setMarkPaidOpen] = useState(false)
+  const [filterCardMember, setFilterCardMember] = useState<string>(searchParams.get('card_member') ?? '')
   const [filterMinAmount, setFilterMinAmount] = useState<string>(searchParams.get('min_amount') ?? '')
   const [filterMaxAmount, setFilterMaxAmount] = useState<string>(searchParams.get('max_amount') ?? '')
   const [tagFilters, setTagFilters] = useState<string[]>([])
@@ -233,6 +234,7 @@ export default function TransactionsPage() {
     setFilterType(searchParams.get('type') ?? '')
     setFilterStatus(searchParams.get('status') ?? '')
     setFilterIsPaid(searchParams.get('is_paid') ?? '')
+    setFilterCardMember(searchParams.get('card_member') ?? '')
     const categories = searchParams.get('category_id');
     setFilterCategoryIds(categories ? categories.split(',') : []);
     setFilterUncategorized(searchParams.get('uncategorized') === '1');
@@ -269,6 +271,7 @@ export default function TransactionsPage() {
         ['type', filterType],
         ['status', filterStatus],
         ['is_paid', filterIsPaid],
+        ['card_member', filterCardMember],
         ['category_id', filterCategoryIds.join(',')],
         ['uncategorized', filterUncategorized ? '1' : ''],
         ['account_id', filterAccountIds.join(',')],
@@ -294,6 +297,7 @@ export default function TransactionsPage() {
     filterType,
     filterStatus,
     filterIsPaid,
+    filterCardMember,
     filterCategoryIds,
     filterUncategorized,
     filterAccountIds,
@@ -317,7 +321,7 @@ export default function TransactionsPage() {
     setSelectedIds(new Set())
     setLastSelectedId(null)
     setBulkCategory('')
-  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterIsPaid, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery])
+  }, [page, filterAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterType, filterStatus, filterIsPaid, filterCardMember, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery])
 
   useEffect(() => {
     if (viewMode === 'calendar') {
@@ -369,7 +373,7 @@ export default function TransactionsPage() {
     && activeAccountIds !== null && activeAccountIds.length === 0
 
   const { data, isLoading } = useQuery({
-    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterIsPaid, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery, tagFilters, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
+    queryKey: ['transactions', page, limit, effectiveAccountIds, filterCategoryIds, filterUncategorized, filterPayee, filterGroupId, filterType, filterStatus, filterIsPaid, filterCardMember, filterFrom, filterTo, filterMinAmount, filterMaxAmount, searchQuery, tagFilters, isMobile ? 'date' : grid.sortBy, isMobile ? 'desc' : grid.sortDir],
     enabled: !noAccounts,
     queryFn: () =>
       transactions.list({
@@ -382,6 +386,7 @@ export default function TransactionsPage() {
         type: filterType || undefined,
         status: filterStatus || undefined,
         is_paid: filterIsPaid === 'true' ? true : filterIsPaid === 'false' ? false : undefined,
+        card_member: filterCardMember || undefined,
         uncategorized: filterUncategorized ? true : undefined,
         from: filterFrom || undefined,
         to: filterTo || undefined,
@@ -456,6 +461,15 @@ export default function TransactionsPage() {
     queryKey: ['accounts'],
     queryFn: () => accountsApi.list(),
   })
+
+  // Only workspaces with supplementary cards have these, so an empty list
+  // hides the column and the filter rather than showing dead controls.
+  const { data: cardMembers } = useQuery({
+    queryKey: ['card-members'],
+    queryFn: () => transactions.cardMembers(),
+    staleTime: 5 * 60 * 1000,
+  })
+  const hasCardMembers = (cardMembers?.length ?? 0) > 0
 
   const { data: payeesList } = useQuery({
     queryKey: ['payees'],
@@ -854,8 +868,11 @@ export default function TransactionsPage() {
   // rendered set rather than showing a column of em-dashes. The registry entry
   // stays put, so the user's column choice survives changing the filter.
   const visibleColumns = useMemo(
-    () => grid.visibleColumns.filter(col => col.id !== 'paid' || scopeHasCreditCard),
-    [grid.visibleColumns, scopeHasCreditCard],
+    () => grid.visibleColumns.filter(col => (
+      (col.id !== 'paid' || scopeHasCreditCard)
+      && (col.id !== 'cardMember' || hasCardMembers)
+    )),
+    [grid.visibleColumns, scopeHasCreditCard, hasCardMembers],
   )
 
   const paidSelection = useMemo(() => {
@@ -1350,6 +1367,14 @@ export default function TransactionsPage() {
               : t('transactions.statusPosted')}
           </TableCell>
         )
+      case 'cardMember':
+        return (
+          <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm text-muted-foreground`}>
+            <span className="block truncate" title={tx.card_member ?? undefined}>
+              {tx.card_member || '—'}
+            </span>
+          </TableCell>
+        )
       case 'paid':
         return (
           <TableCell key={col.id} style={widthStyle} className={`${baseClass} text-sm text-muted-foreground`}>
@@ -1454,6 +1479,9 @@ export default function TransactionsPage() {
         filterIsPaid={filterIsPaid}
         onIsPaidChange={(v) => { setFilterIsPaid(v); setPage(1) }}
         showPaidFilter={scopeHasCreditCard}
+        filterCardMember={filterCardMember}
+        onCardMemberChange={(v) => { setFilterCardMember(v); setPage(1) }}
+        cardMembers={cardMembers ?? []}
         filterFrom={filterFrom}
         filterTo={filterTo}
         onDateRangeChange={(from, to) => { setFilterFrom(from); setFilterTo(to); setPage(1) }}
@@ -1471,6 +1499,7 @@ export default function TransactionsPage() {
           setFilterType('')
           setFilterStatus('')
           setFilterIsPaid('')
+          setFilterCardMember('')
           setFilterMinAmount('')
           setFilterMaxAmount('')
           setSearchInput('')

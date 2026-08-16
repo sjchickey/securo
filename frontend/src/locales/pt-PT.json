@@ -366,6 +366,8 @@
     "colType": "Tipo",
     "colStatus": "Estado",
     "colPaid": "Pago",
+    "colCardMember": "Titular",
+    "cardMemberPlaceholder": "Quem fez este lançamento",
     "typeExpense": "Despesa",
     "typeIncome": "Receita",
     "statusPending": "Pendente",

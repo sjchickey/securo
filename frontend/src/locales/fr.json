@@ -366,6 +366,8 @@
     "colType": "Type",
     "colStatus": "Statut",
     "colPaid": "Payé",
+    "colCardMember": "Titulaire",
+    "cardMemberPlaceholder": "Qui a effectué cette dépense",
     "typeExpense": "Dépense",
     "typeIncome": "Revenu",
     "statusPending": "En attente",
