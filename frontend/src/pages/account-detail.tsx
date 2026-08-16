@@ -10,11 +10,12 @@ import { localDateString } from '@/lib/date-utils'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
 import { getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
 import { toast } from 'sonner'
-import type { CreditCardBill, Transaction } from '@/types'
+import type { CreditCardBill, Transaction, UnpaidCategory } from '@/types'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, ArrowLeftRight, Banknote, CalendarClock, Check, ChevronLeft, ChevronRight, Clock, EyeClosed, HelpCircle, Paperclip, Pencil, X } from 'lucide-react'
 import { MobileTransactionRow } from '@/components/mobile-transaction-row'
+import { calculateRangeSelection } from '@/lib/selection-utils'
 import { CategoryIcon } from '@/components/category-icon'
 import { TransactionDialog, extractApiError, type TransactionSavePayload } from '@/components/transaction-dialog'
 import { MarkPaidDialog } from '@/components/mark-paid-dialog'
@@ -589,6 +590,8 @@ export default function AccountDetailPage() {
   // the rows already loaded for this cycle, so it settles exactly what the
   // user is looking at rather than the card's whole history.
   const [markPaidOpen, setMarkPaidOpen] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
   // Outstanding balance grouped by category for the statement on screen.
   // Mirrors the `summary` query's window exactly — same params, same backend
   // scoping — so this breakdown reconciles with that statement's unpaid_total.
@@ -620,16 +623,80 @@ export default function AccountDetailPage() {
       .map(tx => tx.id),
     [txData?.items],
   )
-  const markStatementPaidMutation = useMutation({
+  // One dialog, three entry points: the whole statement, a row selection, or
+  // every unpaid charge in a category. They only differ by which ids they hand
+  // over, so the ids live in state rather than each caller owning a dialog.
+  const [markPaidIds, setMarkPaidIds] = useState<string[]>([])
+  const openMarkPaid = (ids: string[]) => {
+    if (!ids.length) return
+    setMarkPaidIds(ids)
+    setMarkPaidOpen(true)
+  }
+  const markPaidMutation = useMutation({
     mutationFn: ({ paidDate, paymentId }: { paidDate: string; paymentId?: string }) =>
-      transactions.bulkMarkPaid(unpaidStatementIds, `${paidDate}T00:00:00Z`, paymentId),
+      transactions.bulkMarkPaid(markPaidIds, `${paidDate}T00:00:00Z`, paymentId),
     onSuccess: (result) => {
       invalidateFinancialQueries(queryClient)
       setMarkPaidOpen(false)
-      toast.success(t('transactions.bulkMarkPaidSuccess', { count: result.updated }))
+      setSelectedIds(new Set())
+      toast.success(
+        result.skipped
+          ? t('transactions.bulkMarkPaidPartial', { updated: result.updated, skipped: result.skipped })
+          : t('transactions.bulkMarkPaidSuccess', { count: result.updated }),
+      )
     },
     onError: (error) => toast.error(extractApiError(error)),
   })
+  const markUnpaidMutation = useMutation({
+    mutationFn: (ids: string[]) => transactions.bulkMarkUnpaid(ids),
+    onSuccess: (result) => {
+      invalidateFinancialQueries(queryClient)
+      setSelectedIds(new Set())
+      toast.success(
+        result.skipped
+          ? t('transactions.bulkMarkUnpaidPartial', { updated: result.updated, skipped: result.skipped })
+          : t('transactions.bulkMarkUnpaidSuccess', { count: result.updated }),
+      )
+    },
+    onError: (error) => toast.error(extractApiError(error)),
+  })
+
+  // Marking a whole category paid needs its transaction ids, which the
+  // breakdown endpoint doesn't carry — fetch them under the same window the
+  // panel is currently showing so the two agree about what "unpaid" covers.
+  const MARK_CATEGORY_LIMIT = 500
+  const [markingCategory, setMarkingCategory] = useState<string | null>(null)
+  const markCategoryPaid = async (row: UnpaidCategory) => {
+    const key = row.category_id ?? 'uncategorized'
+    setMarkingCategory(key)
+    try {
+      const res = await transactions.list({
+        account_id: id!,
+        ...(row.category_id ? { category_id: row.category_id } : { uncategorized: true }),
+        is_paid: false,
+        ...(unpaidAllStatements ? {} : {
+          from: filterFrom || undefined,
+          to: filterTo || undefined,
+          bill_id: activeBill?.id,
+          unbilled_only: isInProgressCycle || undefined,
+        }),
+        limit: MARK_CATEGORY_LIMIT,
+      })
+      // Never silently mark a subset: a partial bulk action on money should
+      // say so rather than look complete.
+      if (res.total > res.items.length) {
+        toast.warning(t('accounts.markCategoryPaidTruncated', {
+          shown: res.items.length,
+          total: res.total,
+        }))
+      }
+      openMarkPaid(res.items.map(tx => tx.id))
+    } catch (error) {
+      toast.error(extractApiError(error))
+    } finally {
+      setMarkingCategory(null)
+    }
+  }
 
   const [ccSettingsOpen, setCcSettingsOpen] = useState(false)
   const ccSettingsMutation = useMutation({
@@ -785,6 +852,35 @@ export default function AccountDetailPage() {
     })
   }, [txData, summary, isCreditCard, balanceHistory, usePrimary])
 
+  // Only card rows can be marked paid, and the opening-balance row is
+  // synthetic, so neither is selectable.
+  const selectableTxs = useMemo(
+    () => (isCreditCard ? txWithRunningBalance.filter(tx => tx.source !== 'opening_balance') : []),
+    [isCreditCard, txWithRunningBalance],
+  )
+  const canSelect = isCreditCard && canWrite && selectableTxs.length > 0
+  const allSelected = selectableTxs.length > 0 && selectableTxs.every(tx => selectedIds.has(tx.id))
+  const someSelected = selectableTxs.some(tx => selectedIds.has(tx.id)) && !allSelected
+
+  const toggleSelect = (id: string, isShiftKey: boolean) => {
+    setSelectedIds(prev => calculateRangeSelection(
+      prev, lastSelectedId, id, selectableTxs, isShiftKey,
+      tx => tx.source !== 'opening_balance',
+    ))
+    setLastSelectedId(id)
+  }
+  const toggleSelectAll = () => {
+    setSelectedIds(allSelected ? new Set() : new Set(selectableTxs.map(tx => tx.id)))
+    setLastSelectedId(null)
+  }
+
+  // Selection is scoped to the cycle on screen, so changing cycle drops it
+  // rather than silently acting on rows that are no longer visible.
+  useEffect(() => {
+    setSelectedIds(new Set())
+    setLastSelectedId(null)
+  }, [filterFrom, filterTo, activeBill?.id])
+
   const resolvedDefaultRange = account?.type === 'credit_card'
     ? defaultCycleForCreditCard(account.statement_close_day, account.payment_due_day, new Date())
     : { start: defaultFrom(), end: defaultTo() }
@@ -904,8 +1000,8 @@ export default function AccountDetailPage() {
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() => setMarkPaidOpen(true)}
-              disabled={markStatementPaidMutation.isPending}
+              onClick={() => openMarkPaid(unpaidStatementIds)}
+              disabled={markPaidMutation.isPending}
             >
               <Banknote className="h-4 w-4 mr-1" />
               {t('accounts.markStatementPaid')}
@@ -1414,28 +1510,47 @@ export default function AccountDetailPage() {
             <ul className="space-y-1.5">
               {unpaidByCategory.map((row) => {
                 const pct = total > 0 ? (row.total / total) * 100 : 0
+                const key = row.category_id ?? 'uncategorized'
+                const busy = markingCategory === key
+                // Whole row is the affordance: clicking a category marks
+                // everything unpaid in it, then asks which payment covered it.
+                const Row = canWrite && isCreditCard ? 'button' : 'div'
                 return (
-                  <li key={row.category_id ?? 'uncategorized'} className="flex items-center gap-3">
-                    <CategoryIcon icon={row.icon} color={row.color} size="sm" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="min-w-0 truncate text-sm text-foreground">
-                          {row.name ?? t('transactions.uncategorized')}
-                        </span>
-                        <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-                          {mask(formatCurrency(row.total, account.currency, locale))}
-                        </span>
+                  <li key={key}>
+                    <Row
+                      {...(Row === 'button'
+                        ? {
+                            type: 'button' as const,
+                            disabled: busy,
+                            onClick: () => markCategoryPaid(row),
+                            title: t('accounts.markCategoryPaid'),
+                          }
+                        : {})}
+                      className={`flex w-full items-center gap-3 rounded-md text-left transition-colors ${
+                        Row === 'button' ? 'cursor-pointer p-1 -m-1 hover:bg-muted/60 disabled:opacity-50' : ''
+                      }`}
+                    >
+                      <CategoryIcon icon={row.icon} color={row.color} size="sm" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="min-w-0 truncate text-sm text-foreground">
+                            {row.name ?? t('transactions.uncategorized')}
+                          </span>
+                          <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
+                            {mask(formatCurrency(row.total, account.currency, locale))}
+                          </span>
+                        </div>
+                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${pct}%`, backgroundColor: row.color ?? '#6B7280' }}
+                          />
+                        </div>
                       </div>
-                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full"
-                          style={{ width: `${pct}%`, backgroundColor: row.color ?? '#6B7280' }}
-                        />
-                      </div>
-                    </div>
-                    <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
-                      {row.count}
-                    </span>
+                      <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
+                        {row.count}
+                      </span>
+                    </Row>
                   </li>
                 )
               })}
@@ -1606,13 +1721,13 @@ export default function AccountDetailPage() {
                       tx={tx}
                       account={account}
                       groupName={undefined}
-                      selected={false}
-                      selectable={false}
+                      selected={selectedIds.has(tx.id)}
+                      selectable={canSelect && tx.source !== 'opening_balance'}
                       canWrite={canWrite}
                       highlighted={false}
                       locale={locale}
                       userCurrency={userCurrency}
-                      onSelect={() => {}}
+                      onSelect={toggleSelect}
                       showPayee
                       onClick={(clickedTx) => {
                         // The opening-balance row is synthetic; the desktop
@@ -1630,9 +1745,58 @@ export default function AccountDetailPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
+              {selectedIds.size > 0 && (
+                <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+                  <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                    {selectedIds.size}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{t('transactions.selected')}</span>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8"
+                      disabled={markPaidMutation.isPending}
+                      onClick={() => openMarkPaid([...selectedIds])}
+                    >
+                      <Banknote className="mr-1 h-3.5 w-3.5" />
+                      {t('transactions.markPaid')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8"
+                      disabled={markUnpaidMutation.isPending}
+                      onClick={() => markUnpaidMutation.mutate([...selectedIds])}
+                    >
+                      {t('transactions.markUnpaid')}
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedIds(new Set()); setLastSelectedId(null) }}
+                      className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                      aria-label={t('common.close', 'Close')}
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b">
+                    {canSelect && (
+                      <th className="w-10 px-2 sm:px-4 py-3 text-left font-medium">
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          ref={el => { if (el) el.indeterminate = someSelected }}
+                          onChange={toggleSelectAll}
+                          className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                          aria-label={t('transactions.selectAll', 'Select all')}
+                        />
+                      </th>
+                    )}
                     <th className="px-2 sm:px-4 py-3 text-left font-medium whitespace-nowrap">{t('transactions.date')}</th>
                     <th className="px-2 sm:px-4 py-3 text-left font-medium">{t('transactions.description')}</th>
                     <th className="px-2 sm:px-4 py-3 text-left font-medium hidden md:table-cell">{t('transactions.category')}</th>
@@ -1657,6 +1821,19 @@ export default function AccountDetailPage() {
                           }
                         }}
                       >
+                        {canSelect && (
+                          <td className="w-10 px-2 sm:px-4 py-3" onClick={e => e.stopPropagation()}>
+                            {!isOpening && (
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(tx.id)}
+                                onChange={e => toggleSelect(tx.id, (e.nativeEvent as MouseEvent).shiftKey)}
+                                className="h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                                aria-label={tx.description}
+                              />
+                            )}
+                          </td>
+                        )}
                         <td className="px-3 sm:px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
                           {formatDateStr(tx.date, dateLocale)}
                         </td>
@@ -1801,10 +1978,10 @@ export default function AccountDetailPage() {
       <MarkPaidDialog
         open={markPaidOpen}
         onClose={() => setMarkPaidOpen(false)}
-        transactionIds={unpaidStatementIds}
+        transactionIds={markPaidIds}
         accountId={id ?? null}
-        onConfirm={(paidDate, paymentId) => markStatementPaidMutation.mutate({ paidDate, paymentId })}
-        loading={markStatementPaidMutation.isPending}
+        onConfirm={(paidDate, paymentId) => markPaidMutation.mutate({ paidDate, paymentId })}
+        loading={markPaidMutation.isPending}
       />
 
       <TransferDialog
