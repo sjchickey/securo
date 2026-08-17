@@ -68,6 +68,10 @@ async def _charge(session, test_user, test_workspace, account, *, member=None, a
     ("MISS A O'BRIEN-1234", "MISS A O'BRIEN"),
     ("SEAN HICKEY-41006", "SEAN HICKEY"),
     ("  MR SEAN HICKEY - 41006  ", "MR SEAN HICKEY"),
+    # Amex appends a spend tag to some rows.
+    ("MR SEAN HICKEY-41006-GOODS", "MR SEAN HICKEY"),
+    ("MRS NAOMI HICKEY-41014-SERVICES", "MRS NAOMI HICKEY"),
+    ("MR SEAN HICKEY - 41006 - GOODS", "MR SEAN HICKEY"),
 ])
 def test_cardholder_memos_are_recognised(memo, expected):
     assert _extract_card_member(memo) == expected
@@ -189,6 +193,35 @@ async def test_api_lists_and_filters_by_cardholder(
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["card_member"] == "MRS NAOMI HICKEY"
+
+
+async def test_api_import_persists_the_cardholder(
+    client: AsyncClient, auth_headers, session, test_user, test_workspace, card
+):
+    """The import round trip rebuilds the payload field by field, so the
+    cardholder has to survive preview -> confirm, not just parsing."""
+    resp = await client.post(
+        "/api/transactions/import",
+        json={
+            "account_id": str(card.id),
+            "filename": "amex.qfx",
+            "detected_format": "ofx",
+            "detect_duplicates": False,
+            "transactions": [{
+                "description": "TESCO STORES",
+                "amount": "12.50",
+                "date": "2026-03-05",
+                "type": "debit",
+                "card_member": "MRS NAOMI HICKEY",
+            }],
+        },
+        headers=auth_headers,
+    )
+    assert resp.status_code in (200, 201), resp.text
+    assert resp.json()["imported"] == 1
+
+    members = await get_card_members(session, test_workspace.id)
+    assert members == ["MRS NAOMI HICKEY"]
 
 
 async def test_api_can_set_cardholder_by_hand(

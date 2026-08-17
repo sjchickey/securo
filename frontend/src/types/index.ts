@@ -506,6 +506,7 @@ export interface ImportPreviewTransaction {
   category_id?: string | null
   force_uncategorized?: boolean
   notes?: string | null
+  card_member?: string | null
 }
 
 export interface ImportReviewTransaction extends ImportPreviewTransaction {

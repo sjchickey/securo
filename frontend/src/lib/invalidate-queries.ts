@@ -15,4 +15,8 @@ export function invalidateFinancialQueries(queryClient: QueryClient) {
   queryClient.invalidateQueries({ queryKey: ['budgets'] })
   queryClient.invalidateQueries({ queryKey: ['reports'] })
   queryClient.invalidateQueries({ queryKey: ['drill-down'] })
+  // The cardholder list gates a column and a filter, and is cached for
+  // minutes — without this an import that introduces the first cardholder
+  // leaves both hidden long after the data has landed.
+  queryClient.invalidateQueries({ queryKey: ['card-members'] })
 }

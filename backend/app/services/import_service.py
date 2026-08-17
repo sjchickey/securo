@@ -135,13 +135,18 @@ def _is_balance_summary_row(description: str | None) -> bool:
     return any(normalized.startswith(prefix) for prefix in _OFX_BALANCE_ROW_DESCRIPTIONS)
 
 
-# Amex writes the cardholder into the OFX/QFX MEMO as "MR SEAN HICKEY-41006"
-# — a title, a name in caps, then the card's last digits. Deliberately strict:
+# Amex writes the cardholder into the OFX/QFX MEMO as "MR SEAN HICKEY-41006",
+# sometimes with a trailing tag: "MR SEAN HICKEY-41006-GOODS". A title, a name
+# in caps, the card's last digits, then optionally that tag. Deliberately strict:
 # a memo has to be *only* that shape to be treated as a cardholder, because
 # for most banks the memo is the merchant and misreading it would blank out
 # every description in the file.
 _CARD_MEMBER_MEMO = re.compile(
-    r"^\s*((?:MR|MRS|MS|MISS|DR|PROF)\.?\s+)?([A-Z][A-Z.'\- ]{2,60}?)\s*-\s*\d{3,6}\s*$"
+    r"^\s*((?:MR|MRS|MS|MISS|DR|PROF)\.?\s+)?"      # optional title
+    r"([A-Z][A-Z.'\- ]{2,60}?)"                       # the name, in caps
+    r"\s*-\s*\d{3,6}"                                # the card's last digits
+    r"(?:\s*-\s*[A-Z][A-Z &/'.-]{0,30})?"            # optional trailing tag
+    r"\s*$"
 )
 
 

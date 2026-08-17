@@ -131,6 +131,7 @@ export default function ImportPage() {
         fx_rate: rt.fx_rate ?? undefined,
         payee_raw: rt.payee_raw ?? undefined,
         notes: rt.notes ?? undefined,
+        card_member: rt.card_member ?? undefined,
         category_name: rt.category_name ?? undefined,
         excluded: rt.excluded,
         category_id: rt.selected_category_id !== undefined

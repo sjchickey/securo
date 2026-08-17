@@ -71,6 +71,9 @@ export function ImportReviewTable({
   onPageChange,
 }: ImportReviewTableProps) {
   const { t } = useTranslation()
+  // Only cards with supplementary holders report one, so the column
+  // stays hidden rather than adding a row of dashes to every import.
+  const showCardMember = transactions.some(tx => !!tx.card_member)
   const [pageSize, setPageSize] = useState<number>(() => {
     try {
       const stored = localStorage.getItem('securo.import.pageSize')
@@ -152,6 +155,11 @@ export function ImportReviewTable({
               <TableHead className="text-xs font-medium text-muted-foreground py-3">
                 {t('transactions.description')}
               </TableHead>
+              {showCardMember && (
+                <TableHead className="text-xs font-medium text-muted-foreground py-3 hidden lg:table-cell w-[150px]">
+                  {t('transactions.colCardMember')}
+                </TableHead>
+              )}
               <TableHead className="text-xs font-medium text-muted-foreground py-3 text-right w-[120px]">
                 {t('transactions.amount')}
               </TableHead>
@@ -184,6 +192,13 @@ export function ImportReviewTable({
                   <TableCell className={`py-2.5 text-sm ${tx.excluded ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
                     {tx.description}
                   </TableCell>
+                  {showCardMember && (
+                    <TableCell className="py-2.5 hidden lg:table-cell text-xs text-muted-foreground">
+                      <span className="block max-w-[150px] truncate" title={tx.card_member ?? undefined}>
+                        {tx.card_member || '—'}
+                      </span>
+                    </TableCell>
+                  )}
                   <TableCell className={`py-2.5 text-right text-sm font-bold tabular-nums ${tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-500'}`}>
                     {tx.type === 'credit' ? '+' : '−'}{formatCurrency(Math.abs(Number(tx.amount)), userCurrency, locale)}
                   </TableCell>
