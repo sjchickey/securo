@@ -303,6 +303,7 @@
     "searchRule": "Поиск правила...",
     "noRulesFound": "Правила не найдены.",
     "addManual": "Добавить транзакцию",
+    "addPayment": "Добавить платёж",
     "duplicate": "Дублировать",
     "createRule": "Создать правило",
     "ruleActions": "Действия правила",

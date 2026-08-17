@@ -61,7 +61,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { formatCurrency } from '@/lib/format'
-import { getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
+import { findTransferCategoryId, getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
 
 type TransactionUpdatePayload = TransactionEditPayload & {
   apply_to_transfer_pair?: boolean
@@ -776,6 +776,24 @@ export default function TransactionsPage() {
     },
   })
 
+  // "Add payment" is the ordinary create dialog with the fields a card
+  // payment always has: a credit, on the card, categorised so it stays out of
+  // spend and unpaid totals. Everything remains editable.
+  const openAddPayment = (accountId?: string) => {
+    const cardId = accountId
+      ?? (effectiveAccountIds ?? []).find(cid => creditCardAccountIds.has(cid))
+      ?? [...creditCardAccountIds][0]
+    setEditingTx(null)
+    setDuplicateDraft({
+      type: 'credit',
+      date: new Date().toISOString().slice(0, 10),
+      account_id: cardId,
+      category_id: findTransferCategoryId(categoriesList ?? []),
+    })
+    setFormResetKey(k => k + 1)
+    setDialogOpen(true)
+  }
+
   const handleCreateRuleFromTransaction = (tx: Transaction) => {
     const conditions = [
       { field: 'description', op: 'contains', value: tx.description },
@@ -1438,6 +1456,7 @@ export default function TransactionsPage() {
             exporting={exporting}
             onExport={handleExport}
             onAdd={canWrite ? () => { setEditingTx(null); setDialogOpen(true) } : undefined}
+            onAddPayment={canWrite && creditCardAccountIds.size > 0 ? () => openAddPayment() : undefined}
             onDuplicate={duplicableTx ? () => handleDuplicateTransaction(duplicableTx) : undefined}
             onTransfer={canWrite ? () => setTransferDialogOpen(true) : undefined}
           />

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { ArrowLeftRight, CalendarDays, Copy, Download, List, MoreHorizontal } from 'lucide-react'
+import { ArrowLeftRight, Banknote, CalendarDays, Copy, Download, List, MoreHorizontal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { MonthStepper } from '@/components/month-stepper'
 import { Button } from '@/components/ui/button'
@@ -38,6 +38,7 @@ export type TransactionsPageActionsProps = {
   exporting: boolean
   onExport: () => void
   onAdd?: () => void
+  onAddPayment?: () => void
   onDuplicate?: () => void
   onTransfer?: () => void
   testId?: string
@@ -93,14 +94,24 @@ function DesktopSecondaryActions(props: TransactionsPageActionsProps) {
   )
 }
 
-function PrimaryAddAction({ onAdd }: { onAdd?: () => void }) {
+function PrimaryAddAction({ onAdd, onAddPayment }: { onAdd?: () => void; onAddPayment?: () => void }) {
   const { t } = useTranslation()
-  if (!onAdd) return null
+  if (!onAdd && !onAddPayment) return null
   return (
-    <Button className="shrink-0 px-3" onClick={onAdd}>
-      + <span className="sm:hidden">{t('common.add')}</span>
-      <span className="hidden sm:inline">{t('transactions.addManual')}</span>
-    </Button>
+    <>
+      {onAddPayment && (
+        <Button variant="outline" className="shrink-0 px-3" onClick={onAddPayment}>
+          <Banknote className="h-4 w-4 sm:mr-1.5" />
+          <span className="hidden sm:inline">{t('transactions.addPayment')}</span>
+        </Button>
+      )}
+      {onAdd && (
+        <Button className="shrink-0 px-3" onClick={onAdd}>
+          + <span className="sm:hidden">{t('common.add')}</span>
+          <span className="hidden sm:inline">{t('transactions.addManual')}</span>
+        </Button>
+      )}
+    </>
   )
 }
 
@@ -140,7 +151,7 @@ export function TransactionsPageActions(props: TransactionsPageActionsProps) {
     <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto sm:flex-wrap sm:justify-end" data-testid={props.testId}>
       <HeaderMonthStepper month={props.month} />
       <DesktopSecondaryActions {...props} />
-      <PrimaryAddAction onAdd={props.onAdd} />
+      <PrimaryAddAction onAdd={props.onAdd} onAddPayment={props.onAddPayment} />
       <MobileSecondaryMenu {...props} />
     </div>
   )

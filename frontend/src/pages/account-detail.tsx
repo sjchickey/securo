@@ -8,9 +8,9 @@ import { format, addDays, addMonths, parseISO } from 'date-fns'
 import { accounts, transactions, categories as categoriesApi, categoryGroups as categoryGroupsApi } from '@/lib/api'
 import { localDateString } from '@/lib/date-utils'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
-import { getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
+import { findTransferCategoryId, getPaidRowClassName, shouldShowPendingBadge } from '@/lib/transaction-status'
 import { toast } from 'sonner'
-import type { CreditCardBill, Transaction, UnpaidCategory } from '@/types'
+import type { CreditCardBill, Transaction, TransactionEditPayload, UnpaidCategory } from '@/types'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, ArrowLeftRight, Banknote, CalendarClock, Check, ChevronLeft, ChevronRight, Clock, EyeClosed, HelpCircle, Paperclip, Pencil, X } from 'lucide-react'
@@ -590,6 +590,7 @@ export default function AccountDetailPage() {
   // the rows already loaded for this cycle, so it settles exactly what the
   // user is looking at rather than the card's whole history.
   const [markPaidOpen, setMarkPaidOpen] = useState(false)
+  const [paymentDraft, setPaymentDraft] = useState<TransactionEditPayload | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null)
   // Outstanding balance grouped by category for the statement on screen.
@@ -1001,6 +1002,29 @@ export default function AccountDetailPage() {
             >
               <ArrowLeftRight className="h-4 w-4 mr-1" />
               {t('transactions.transfer')}
+            </Button>
+          )}
+          {!account.is_closed && canWrite && isCreditCard && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => {
+                // Same create dialog, pre-filled with what a card payment
+                // always is: a credit on this card, categorised so it stays
+                // out of spend and unpaid totals. All still editable.
+                setEditingTx(null)
+                setPaymentDraft({
+                  type: 'credit',
+                  date: new Date().toISOString().slice(0, 10),
+                  account_id: id,
+                  category_id: findTransferCategoryId(categoriesList ?? []),
+                })
+                setDialogOpen(true)
+              }}
+            >
+              <Banknote className="h-4 w-4 mr-1" />
+              {t('transactions.addPayment')}
             </Button>
           )}
           {!account.is_closed && canWrite && isCreditCard && unpaidStatementIds.length > 0 && (
@@ -1975,8 +1999,9 @@ export default function AccountDetailPage() {
 
       <TransactionDialog
         open={dialogOpen}
-        onClose={() => { setDialogOpen(false); setEditingTx(null) }}
+        onClose={() => { setDialogOpen(false); setEditingTx(null); setPaymentDraft(null) }}
         transaction={editingTx}
+        duplicateDraft={paymentDraft}
         categories={categoriesList ?? []}
         categoryGroups={categoryGroupsList ?? []}
         accounts={accountsList ?? []}

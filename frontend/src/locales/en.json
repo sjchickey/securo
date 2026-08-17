@@ -303,6 +303,7 @@
     "searchRule": "Search rule...",
     "noRulesFound": "No rules found.",
     "addManual": "Add Transaction",
+    "addPayment": "Add payment",
     "duplicate": "Duplicate",
     "createRule": "Create Rule",
     "ruleActions": "Rule actions",
