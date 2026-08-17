@@ -4,8 +4,9 @@ import io
 import re
 import uuid
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Optional
 
 from ofxparse import OfxParser
 from sqlalchemy import select
@@ -421,6 +422,55 @@ CSV_MAPPABLE_FIELDS = (
 )
 
 
+# How far the bank's posting date may drift from the date you entered the
+# stand-in. Matches the recurring-placeholder window for consistency.
+_MANUAL_MATCH_DAYS = 5
+
+
+async def _find_manual_stand_in(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    amount: Decimal,
+    currency: str,
+    tx_type: str,
+    tx_date: date,
+) -> Optional[Transaction]:
+    """Find a hand-entered transaction this imported row is the real version of.
+
+    Card payments don't reach the download for days, so people enter them by
+    hand to keep the balance honest — and then tag charges against them. When
+    the real one finally imports it would insert alongside, double-counting the
+    payment and stranding every `covered_by_payment_id` pointing at the manual
+    row. Merging upgrades that row in place instead, so the links survive.
+
+    Unlike the recurring-placeholder match this ignores the description: you
+    typed "Amex payment" and the bank says "PAYMENT RECEIVED - THANK YOU", so
+    similarity would never clear the threshold. An exact amount, in the same
+    currency and direction, on the same account, within a few days is a strong
+    enough key on its own — amounts are arbitrary to the penny.
+
+    Only rows still carrying `external_id IS NULL` qualify, so a row that has
+    already absorbed one import can't be claimed again by a second.
+    """
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.account_id == account_id,
+            Transaction.source == "manual",
+            Transaction.external_id.is_(None),
+            Transaction.is_ignored == False,
+            Transaction.amount == amount,
+            Transaction.currency == currency,
+            Transaction.type == tx_type,
+            Transaction.date >= tx_date - timedelta(days=_MANUAL_MATCH_DAYS),
+            Transaction.date <= tx_date + timedelta(days=_MANUAL_MATCH_DAYS),
+        )
+    )
+    # Nearest date wins when more than one stand-in fits. Sorted in Python so
+    # the date arithmetic doesn't depend on the database's own date functions.
+    candidates = sorted(result.scalars().all(), key=lambda t: abs((t.date - tx_date).days))
+    return candidates[0] if candidates else None
+
+
 def _sniff_csv_dialect(text: str):
     """Detect the CSV dialect (delimiter/quoting), falling back to comma."""
     try:
@@ -745,6 +795,8 @@ async def import_transactions(
 
     imported = 0
     skipped = 0
+    # Rows that upgraded a hand-entered stand-in instead of inserting.
+    merged = 0
     effective_format = (detected_format or source or "").lower()
     should_detect_duplicates = detect_duplicates if effective_format == "csv" else True
 
@@ -812,6 +864,30 @@ async def import_transactions(
             imported += 1
             continue
 
+        # A hand-entered stand-in for this same transaction — typically a card
+        # payment entered on the day it was made, days before the bank
+        # publishes it. Upgrade that row rather than inserting beside it, so
+        # the payment isn't counted twice and the charges tagged against it
+        # keep pointing somewhere real.
+        stand_in = await _find_manual_stand_in(
+            session, account_id, txn_data.amount, txn_currency, txn_data.type,
+            txn_data.date,
+        )
+        if stand_in is not None:
+            stand_in.source = source
+            stand_in.external_id = txn_data.external_id
+            stand_in.import_id = import_log.id
+            # The description you chose is kept: you wrote it deliberately, and
+            # the bank's wording is usually worse. Same for the date, so the
+            # row can't jump statements underneath you.
+            if import_payee_raw and not stand_in.payee:
+                stand_in.payee = import_payee_raw
+                stand_in.payee_id = import_payee_id
+            if getattr(txn_data, "card_member", None) and not stand_in.card_member:
+                stand_in.card_member = txn_data.card_member
+            merged += 1
+            continue
+
         # Otherwise, link to an active bill's next occurrence if this fulfills it.
         recurring_link = await recurring_match_service.find_bill_for_incoming(
             session, user_id, account_id, txn_data.amount, txn_currency, txn_data.type,
@@ -868,7 +944,7 @@ async def import_transactions(
     import_log.transaction_count = imported
 
     await session.commit()
-    return imported, skipped, excluded_count, import_log.id
+    return imported, skipped, excluded_count, merged, import_log.id
 
 def normalize_amount(amount_str: str | None) -> str:
     """

@@ -1039,6 +1039,7 @@
     "acceptedFormats": "Akceptowane formaty: OFX, CSV, QIF, CAMT",
     "downloadTemplate": "Pobierz szablon CSV",
     "transactionsImported": "zaimportowanych transakcji",
+    "mergedIntoManual": "{{count}} transakcji dopasowano do wpisów ręcznych",
     "importedWithSkipped": "Zaimportowano: {{imported}}, pominięto duplikatów: {{skipped}}",
     "csvOptions": "Opcje CSV",
     "importOptions": "Opcje importu",

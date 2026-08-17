@@ -157,6 +157,11 @@ export default function ImportPage() {
         ? t('import.importedWithExcluded', { imported: data.imported, skipped: data.skipped ?? 0, excluded: data.excluded ?? 0 })
         : `${data.imported} ${t('import.transactionsImported')}`
       toast.success(msg)
+      // Merges rewrite rows you entered by hand, so say so rather than
+      // letting them change under you silently.
+      if ((data.merged ?? 0) > 0) {
+        toast.info(t('import.mergedIntoManual', { count: data.merged }))
+      }
       setPreviewData(null)
       setReviewTransactions([])
       setSelectedAccount('')

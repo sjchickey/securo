@@ -56,7 +56,7 @@ async def test_import_links_and_advances_bill(session, test_user, test_workspace
     txns = [TransactionImport(description="NETFLIX SUBSCRIPTION", amount=Decimal("39.90"),
                               date=date(2026, 1, 12), type="debit", currency="BRL")]
 
-    imported, skipped, _, _ = await _run_import(session, test_workspace, test_user, account_id, txns)
+    imported, skipped, _, _, _ = await _run_import(session, test_workspace, test_user, account_id, txns)
 
     assert imported == 1 and skipped == 0
     txs = await _real_txs(session, account_id)
@@ -88,7 +88,7 @@ async def test_import_merges_into_placeholder(session, test_user, test_workspace
     # merge (case-insensitive similarity) is what catches it.
     txns = [TransactionImport(description="NETFLIX SUBSCRIPTION", amount=Decimal("39.90"),
                               date=date(2026, 1, 11), type="debit", currency="BRL")]
-    imported, skipped, _, _ = await _run_import(session, test_workspace, test_user, account_id, txns)
+    imported, skipped, _, _, _ = await _run_import(session, test_workspace, test_user, account_id, txns)
 
     assert imported == 1
     txs = await _real_txs(session, account_id)

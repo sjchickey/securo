@@ -985,6 +985,7 @@
     "acceptedFormats": "Підтримувані формати: OFX, CSV, QIF, CAMT",
     "downloadTemplate": "Завантажити шаблон CSV",
     "transactionsImported": "імпортовано транзакцій",
+    "mergedIntoManual": "{{count}} операцій зіставлено з введеними вручну",
     "importedWithSkipped": "{{imported}} імпортовано, {{skipped}} дублікатів пропущено",
     "csvOptions": "Налаштування CSV",
     "importOptions": "Параметри імпорту",

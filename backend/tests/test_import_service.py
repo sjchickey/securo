@@ -1305,7 +1305,7 @@ class TestImportTransactionsFx:
             ),
         ]
 
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "csv",
         )
 
@@ -1343,7 +1343,7 @@ class TestImportTransactionsFx:
             ),
         ]
 
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "ofx",
         )
 
@@ -1372,7 +1372,7 @@ class TestImportTransactionsFx:
             ),
         ]
 
-        imported, _, _, _ = await import_transactions(
+        imported, _, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "csv",
         )
 
@@ -1408,7 +1408,7 @@ class TestImportTransactionsFx:
             ),
         ]
 
-        imported, _, _, _ = await import_transactions(
+        imported, _, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "csv",
         )
 
@@ -1463,7 +1463,7 @@ class TestImportTransactionsFx:
             ),
         ]
 
-        imported, _, _, _ = await import_transactions(
+        imported, _, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, usd_account.id, txns, "csv",
         )
 
@@ -1496,7 +1496,7 @@ class TestImportTransactionsFx:
             ),
         ]
 
-        imported, _, _, _ = await import_transactions(
+        imported, _, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "csv",
         )
 
@@ -1540,7 +1540,7 @@ class TestImportTransactionsFx:
             ),
         ]
 
-        imported, _, _, _ = await import_transactions(
+        imported, _, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "csv",
         )
 
@@ -1710,7 +1710,7 @@ class TestImportTransactionsWithCategory:
             category_name="Salário & Renda",
         )]
 
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "import",
         )
 
@@ -1740,7 +1740,7 @@ class TestImportTransactionsWithCategory:
             category_name="Categoria Inexistente",
         )]
 
-        imported, _, _, _ = await import_transactions(
+        imported, _, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "import",
         )
 
@@ -1768,7 +1768,7 @@ class TestImportTransactionsWithCategory:
             type="debit",
         )]
 
-        imported, _, _, _ = await import_transactions(
+        imported, _, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "import",
         )
 
@@ -1826,7 +1826,7 @@ class TestImportTransactionsWithCategory:
             ),
         ]
 
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, txns, "import",
         )
 
@@ -1881,7 +1881,7 @@ class TestImportTransactionsWithCategory:
         assert transactions[0].category_name == "Salário & Renda"
         assert transactions[1].category_name == "Moradia"
 
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, transactions, "import",
         )
 
@@ -1923,7 +1923,7 @@ class TestOfxInstallmentDedup:
                 external_id="PURCHASE_ABC123",
             ),
         ]
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, first, "ofx",
         )
         assert imported == 1
@@ -1938,7 +1938,7 @@ class TestOfxInstallmentDedup:
                 external_id="PURCHASE_ABC123",  # bank reuses purchase FITID
             ),
         ]
-        imported2, skipped2, _, _ = await import_transactions(
+        imported2, skipped2, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, second, "ofx",
         )
         assert imported2 == 1
@@ -1966,7 +1966,7 @@ class TestOfxInstallmentDedup:
             external_id="DEDUP_ME",
         )
         await import_transactions(session, test_workspace.id, test_user.id, test_account.id, [txn], "ofx")
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, [txn], "ofx",
         )
         assert imported == 0
@@ -1997,7 +1997,7 @@ class TestCsvDuplicateDetectionToggle:
             detected_format="csv",
             detect_duplicates=False,
         )
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session,
             test_workspace.id,
             test_user.id,
@@ -2034,7 +2034,7 @@ class TestCsvDuplicateDetectionToggle:
             detected_format="ofx",
             detect_duplicates=False,
         )
-        imported, skipped, _, _ = await import_transactions(
+        imported, skipped, _, _, _ = await import_transactions(
             session,
             test_workspace.id,
             test_user.id,
@@ -2079,7 +2079,7 @@ class TestApplyRuleEngineCorrectly:
             suggested_category_id = test_categories[1].id
         )
 
-        imported, _, _, import_log_id = await import_transactions(
+        imported, _, _, _, import_log_id = await import_transactions(
             session,
             test_workspace.id,
             test_user.id,
@@ -2127,7 +2127,7 @@ class TestApplyRuleEngineCorrectly:
             suggested_category_id = None
         )
 
-        imported, _, _, import_log_id = await import_transactions(
+        imported, _, _, _, import_log_id = await import_transactions(
             session,
             test_workspace.id,
             test_user.id,
@@ -2195,7 +2195,7 @@ class TestApplyRuleEngineCorrectly:
             type="debit",
             suggested_category_id=test_categories[2].id,
         )
-        imported, _, _, import_log_id = await import_transactions(
+        imported, _, _, _, import_log_id = await import_transactions(
             session,
             test_workspace.id,
             test_user.id,
@@ -2244,7 +2244,7 @@ class TestForceUncategorized:
             force_uncategorized=True,
         )
 
-        imported, _, _, import_log_id = await import_transactions(
+        imported, _, _, _, import_log_id = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, [txn], "import",
         )
 
@@ -2286,7 +2286,7 @@ class TestForceUncategorized:
             force_uncategorized=True,
         )
 
-        imported, _, _, import_log_id = await import_transactions(
+        imported, _, _, _, import_log_id = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, [txn], "import",
         )
 
@@ -2342,7 +2342,7 @@ class TestForceUncategorized:
             force_uncategorized=True,
         )
 
-        imported, _, _, import_log_id = await import_transactions(
+        imported, _, _, _, import_log_id = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, [txn], "import",
         )
 
@@ -2378,7 +2378,7 @@ class TestForceUncategorized:
             suggested_category_id=cat.id,
         )
 
-        imported, _, _, import_log_id = await import_transactions(
+        imported, _, _, _, import_log_id = await import_transactions(
             session, test_workspace.id, test_user.id, test_account.id, [txn], "import",
         )
 
@@ -2417,7 +2417,7 @@ async def test_import_tolerates_duplicate_external_id_rows(
         type="debit", external_id="FITID-DUP",
     )]
 
-    imported, skipped, _, _ = await import_transactions(
+    imported, skipped, _, _, _ = await import_transactions(
         session, test_workspace.id, test_user.id, test_account.id, txns, "ofx",
         detected_format="ofx",
     )

@@ -659,7 +659,7 @@ export const transactions = {
     filename: string,
     detected_format: string,
     options?: { detect_duplicates?: boolean },
-  ): Promise<{ imported: number; skipped: number; excluded: number; import_log_id: string }> => {
+  ): Promise<{ imported: number; skipped: number; excluded: number; merged: number; import_log_id: string }> => {
     const payload: {
       account_id: string
       transactions: ImportPreviewTransaction[]
